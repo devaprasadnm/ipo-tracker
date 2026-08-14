@@ -1,6 +1,6 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
+import { getAuth, Auth } from 'firebase/auth';
+import { getFirestore, Firestore } from 'firebase/firestore';
 
 const firebaseConfig = {
   apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
@@ -11,9 +11,37 @@ const firebaseConfig = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
-// Singleton pattern: reuse existing Firebase app if already initialized
-const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+// Lazy initialization — avoids errors during static export (build time)
+// Firebase is only initialized when actually needed in the browser
+function getFirebaseApp(): FirebaseApp {
+  if (!getApps().length) {
+    return initializeApp(firebaseConfig);
+  }
+  return getApp();
+}
 
-export const auth = getAuth(app);
-export const db = getFirestore(app);
-export default app;
+// Lazy getters — these are safe to call at module scope because they
+// only initialize Firebase when accessed for the first time in the browser
+let _auth: Auth | null = null;
+let _db: Firestore | null = null;
+
+export function getAuthInstance(): Auth {
+  if (!_auth) {
+    _auth = getAuth(getFirebaseApp());
+  }
+  return _auth;
+}
+
+export function getDbInstance(): Firestore {
+  if (!_db) {
+    _db = getFirestore(getFirebaseApp());
+  }
+  return _db;
+}
+
+// Convenient accessors for client components (these will throw during SSR/build,
+// which is fine because they're only used in 'use client' components)
+export const auth = typeof window !== 'undefined' ? getAuthInstance() : (null as unknown as Auth);
+export const db = typeof window !== 'undefined' ? getDbInstance() : (null as unknown as Firestore);
+
+export default getFirebaseApp;
