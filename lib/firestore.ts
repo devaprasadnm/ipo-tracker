@@ -16,10 +16,13 @@ import {
   serverTimestamp,
   Timestamp,
   increment,
+  limit,
 } from 'firebase/firestore';
 import { getDbInstance } from './firebase';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
+
+export type InvestmentCategory = 'RETAIL' | 'HNI' | 'sHNI' | 'bHNI' | 'SME';
 
 export interface IPO {
   id: string;
@@ -42,6 +45,9 @@ export interface IPOInvestment {
   userDisplayName: string;
   investedAmount: number;
   profitEarned: number;
+  category: InvestmentCategory;
+  lotsApplied: number;
+  allotmentStatus: 'APPLIED' | 'ALLOTTED' | 'NOT_ALLOTTED';
 }
 
 export interface UserInfo {
@@ -49,6 +55,73 @@ export interface UserInfo {
   email: string;
   displayName: string;
   isAdmin: boolean;
+}
+
+export interface ActivityLog {
+  id: string;
+  adminEmail: string;
+  adminName: string;
+  actionType: 'CREATE_IPO' | 'ALLOCATE_FUNDS' | 'UPDATE_INVESTMENT' | 'UPDATE_STATUS' | 'RESOLVE_PROFIT' | 'DELETE_IPO';
+  description: string;
+  targetIpoName: string;
+  createdAt: Timestamp;
+}
+
+// ─── Activity Log Helper ────────────────────────────────────────────────────────
+
+/**
+ * Log an Admin action into the `activity_logs` collection.
+ */
+export async function logAdminAction(
+  adminEmail: string,
+  adminName: string,
+  actionType: ActivityLog['actionType'],
+  description: string,
+  targetIpoName: string
+) {
+  try {
+    const db = getDbInstance();
+    await addDoc(collection(db, 'activity_logs'), {
+      adminEmail: adminEmail || 'Admin',
+      adminName: adminName || 'Admin',
+      actionType,
+      description,
+      targetIpoName,
+      createdAt: serverTimestamp(),
+    });
+  } catch (err) {
+    console.error('Failed to log admin action:', err);
+  }
+}
+
+/**
+ * Subscribe to recent activity logs (top 50, newest first).
+ */
+export function useActivityLogs() {
+  const [logs, setLogs] = useState<ActivityLog[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') { setLoading(false); return; }
+    const db = getDbInstance();
+    const q = query(collection(db, 'activity_logs'), orderBy('createdAt', 'desc'), limit(50));
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snap) => {
+        setLogs(snap.docs.map((d) => ({ id: d.id, ...d.data() } as ActivityLog)));
+        setLoading(false);
+      },
+      (err) => {
+        console.error('Activity logs error:', err);
+        setLoading(false);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  return { logs, loading };
 }
 
 // ─── Real-time Hooks ────────────────────────────────────────────────────────────
@@ -164,12 +237,6 @@ export function useUserInvestments(
           );
         });
 
-        console.log('[useUserInvestments Debug]', {
-          searchCriteria: { cleanUid, cleanEmail, cleanName },
-          totalDocsInCollection: all.length,
-          matchedDocs: filtered,
-        });
-
         setInvestments(filtered);
         setLoading(false);
       },
@@ -212,46 +279,79 @@ export function useAllUsers() {
 /**
  * Create a new IPO entry. Admin only.
  */
-export async function createIPO(data: {
-  name: string;
-  lotSize: number;
-  issuePrice: number;
-  openDate: string;
-  closeDate: string;
-}) {
+export async function createIPO(
+  data: {
+    name: string;
+    lotSize: number;
+    issuePrice: number;
+    openDate: string;
+    closeDate: string;
+  },
+  adminInfo?: { email: string; name: string }
+) {
   const db = getDbInstance();
-  await addDoc(collection(db, 'ipos'), {
+  const docRef = await addDoc(collection(db, 'ipos'), {
     ...data,
     status: 'OPEN',
     totalInvested: 0,
     netProfit: 0,
     createdAt: serverTimestamp(),
   });
+
+  if (adminInfo) {
+    await logAdminAction(
+      adminInfo.email,
+      adminInfo.name,
+      'CREATE_IPO',
+      `Created new IPO entry: ${data.name} (Price: ₹${data.issuePrice}, Lot: ${data.lotSize})`,
+      data.name
+    );
+  }
+
+  return docRef.id;
 }
 
 /**
  * Update IPO status (OPEN → APPLIED → ALLOTTED).
  */
-export async function updateIPOStatus(ipoId: string, status: IPO['status']) {
+export async function updateIPOStatus(
+  ipoId: string,
+  ipoName: string,
+  status: IPO['status'],
+  adminInfo?: { email: string; name: string }
+) {
   const db = getDbInstance();
   await updateDoc(doc(db, 'ipos', ipoId), { status });
+
+  if (adminInfo) {
+    await logAdminAction(
+      adminInfo.email,
+      adminInfo.name,
+      'UPDATE_STATUS',
+      `Changed status of ${ipoName} to ${status}`,
+      ipoName
+    );
+  }
 }
 
 /**
- * Add an investment for a user to a specific IPO.
- * Updates the IPO's totalInvested using atomic increment.
+ * Add an investment for a user to a specific IPO with category, lots, and allotment status.
  */
 export async function addInvestment(
   ipoId: string,
+  ipoName: string,
   uid: string,
   userEmail: string,
   userDisplayName: string,
-  investedAmount: number
+  investedAmount: number,
+  category: InvestmentCategory = 'RETAIL',
+  lotsApplied: number = 1,
+  allotmentStatus: 'APPLIED' | 'ALLOTTED' | 'NOT_ALLOTTED' = 'APPLIED',
+  adminInfo?: { email: string; name: string }
 ) {
   const db = getDbInstance();
   const batch = writeBatch(db);
 
-  // Create investment document
   const investmentRef = doc(collection(db, 'ipo_investments'));
   batch.set(investmentRef, {
     ipoId,
@@ -260,105 +360,156 @@ export async function addInvestment(
     userDisplayName,
     investedAmount,
     profitEarned: 0,
+    category,
+    lotsApplied,
+    allotmentStatus,
   });
 
-  // Atomically increment totalInvested on the IPO
   const ipoRef = doc(db, 'ipos', ipoId);
   batch.update(ipoRef, {
     totalInvested: increment(investedAmount),
   });
 
   await batch.commit();
+
+  if (adminInfo) {
+    await logAdminAction(
+      adminInfo.email,
+      adminInfo.name,
+      'ALLOCATE_FUNDS',
+      `Allocated ₹${investedAmount.toLocaleString('en-IN')} (${category}, ${lotsApplied} lot(s)) for ${userDisplayName} (${userEmail})`,
+      ipoName
+    );
+  }
 }
 
 /**
  * Remove an investment and update the IPO's totalInvested.
  */
-export async function removeInvestment(investmentId: string, ipoId: string, investedAmount: number) {
+export async function removeInvestment(
+  investmentId: string,
+  ipoId: string,
+  ipoName: string,
+  userDisplayName: string,
+  investedAmount: number,
+  adminInfo?: { email: string; name: string }
+) {
   const db = getDbInstance();
   const batch = writeBatch(db);
 
-  // Delete the investment doc
   batch.delete(doc(db, 'ipo_investments', investmentId));
-
-  // Decrement totalInvested on the IPO
   batch.update(doc(db, 'ipos', ipoId), {
     totalInvested: increment(-investedAmount),
   });
 
   await batch.commit();
+
+  if (adminInfo) {
+    await logAdminAction(
+      adminInfo.email,
+      adminInfo.name,
+      'UPDATE_INVESTMENT',
+      `Removed ₹${investedAmount.toLocaleString('en-IN')} allocation for ${userDisplayName}`,
+      ipoName
+    );
+  }
 }
 
 /**
- * Edit an existing investment amount and update totalInvested on the IPO.
+ * Edit an existing investment amount, category, lots, and status.
  */
 export async function updateInvestmentAmount(
   investmentId: string,
   ipoId: string,
+  ipoName: string,
+  userDisplayName: string,
   oldAmount: number,
-  newAmount: number
+  newAmount: number,
+  category?: InvestmentCategory,
+  lotsApplied?: number,
+  allotmentStatus?: 'APPLIED' | 'ALLOTTED' | 'NOT_ALLOTTED',
+  adminInfo?: { email: string; name: string }
 ) {
   const db = getDbInstance();
   const batch = writeBatch(db);
 
   const diff = newAmount - oldAmount;
 
-  // Update investment doc
-  batch.update(doc(db, 'ipo_investments', investmentId), {
+  const updateFields: Record<string, unknown> = {
     investedAmount: newAmount,
-  });
+  };
+  if (category) updateFields.category = category;
+  if (lotsApplied !== undefined) updateFields.lotsApplied = lotsApplied;
+  if (allotmentStatus) updateFields.allotmentStatus = allotmentStatus;
 
-  // Adjust totalInvested on the IPO by diff
+  batch.update(doc(db, 'ipo_investments', investmentId), updateFields);
   batch.update(doc(db, 'ipos', ipoId), {
     totalInvested: increment(diff),
   });
 
   await batch.commit();
+
+  if (adminInfo) {
+    await logAdminAction(
+      adminInfo.email,
+      adminInfo.name,
+      'UPDATE_INVESTMENT',
+      `Updated ${userDisplayName}'s allocation from ₹${oldAmount.toLocaleString('en-IN')} to ₹${newAmount.toLocaleString('en-IN')}`,
+      ipoName
+    );
+  }
 }
 
 /**
  * Delete an IPO and all its associated ipo_investments. Admin only.
  */
-export async function deleteIPO(ipoId: string) {
+export async function deleteIPO(
+  ipoId: string,
+  ipoName: string,
+  adminInfo?: { email: string; name: string }
+) {
   const db = getDbInstance();
 
-  // Get all associated investments
   const investmentsSnap = await getDocs(
     query(collection(db, 'ipo_investments'), where('ipoId', '==', ipoId))
   );
 
   const batch = writeBatch(db);
 
-  // Delete all investment docs
   investmentsSnap.docs.forEach((d) => {
     batch.delete(d.ref);
   });
 
-  // Delete the IPO doc
   batch.delete(doc(db, 'ipos', ipoId));
 
   await batch.commit();
+
+  if (adminInfo) {
+    await logAdminAction(
+      adminInfo.email,
+      adminInfo.name,
+      'DELETE_IPO',
+      `Deleted IPO deal "${ipoName}" and removed all its allocations`,
+      ipoName
+    );
+  }
 }
 
 /**
- * Resolve an IPO as SOLD.
- * 
- * CORE BUSINESS LOGIC:
- * 1. Admin enters the net profit/loss for the IPO.
- * 2. For each investor:
- *    - Share % = investedAmount / totalInvested
- *    - profitEarned = netProfit × Share %
- * 3. Updates all investment docs and sets IPO status to SOLD.
+ * Resolve an IPO as SOLD and distribute profits proportionally.
  */
-export async function resolveIPO(ipoId: string, netProfit: number) {
+export async function resolveIPO(
+  ipoId: string,
+  ipoName: string,
+  netProfit: number,
+  adminInfo?: { email: string; name: string }
+) {
   const db = getDbInstance();
 
-  // Fetch all investments for this IPO
   const investmentsSnap = await getDocs(
     query(collection(db, 'ipo_investments'), where('ipoId', '==', ipoId))
   );
 
-  // Calculate total invested (from docs, not from IPO doc, for accuracy)
   let totalInvested = 0;
   investmentsSnap.docs.forEach((d) => {
     totalInvested += d.data().investedAmount;
@@ -370,7 +521,6 @@ export async function resolveIPO(ipoId: string, netProfit: number) {
 
   const batch = writeBatch(db);
 
-  // Distribute profit to each investor proportionally
   investmentsSnap.docs.forEach((d) => {
     const data = d.data();
     const sharePercent = data.investedAmount / totalInvested;
@@ -378,14 +528,24 @@ export async function resolveIPO(ipoId: string, netProfit: number) {
 
     batch.update(doc(db, 'ipo_investments', d.id), {
       profitEarned,
+      allotmentStatus: 'ALLOTTED',
     });
   });
 
-  // Update IPO status and netProfit
   batch.update(doc(db, 'ipos', ipoId), {
     status: 'SOLD',
     netProfit,
   });
 
   await batch.commit();
+
+  if (adminInfo) {
+    await logAdminAction(
+      adminInfo.email,
+      adminInfo.name,
+      'RESOLVE_PROFIT',
+      `Marked ${ipoName} as SOLD and distributed ₹${netProfit.toLocaleString('en-IN')} profit/loss across ${investmentsSnap.docs.length} investor(s)`,
+      ipoName
+    );
+  }
 }

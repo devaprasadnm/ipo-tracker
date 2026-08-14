@@ -8,6 +8,7 @@ import { useIPOs, createIPO, deleteIPO } from '@/lib/firestore';
 import { formatCurrency } from '@/lib/helpers';
 import Modal from '@/components/Modal';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import ActivityLogModal from '@/components/ActivityLogModal';
 
 interface ScrapedIPO {
   name: string;
@@ -41,6 +42,9 @@ export default function AdminPage() {
   const [fetching, setFetching] = useState(false);
   const [savingIndex, setSavingIndex] = useState<number | null>(null);
 
+  // Activity Log Modal
+  const [showLogModal, setShowLogModal] = useState(false);
+
   useEffect(() => {
     if (!authLoading && !user) router.push('/login');
     if (!authLoading && userData && !userData.isAdmin) router.push('/dashboard');
@@ -48,6 +52,8 @@ export default function AdminPage() {
 
   if (authLoading || iposLoading) return <LoadingSpinner />;
   if (!user || !userData || !userData.isAdmin) return null;
+
+  const adminInfo = { email: userData.email, name: userData.displayName };
 
   // ─── Create IPO ───────────────────────────────────────────────────
 
@@ -62,13 +68,16 @@ export default function AdminPage() {
 
     setSubmitting(true);
     try {
-      await createIPO({
-        name: name.trim(),
-        lotSize: parseInt(lotSize, 10),
-        issuePrice: parseFloat(issuePrice),
-        openDate,
-        closeDate,
-      });
+      await createIPO(
+        {
+          name: name.trim(),
+          lotSize: parseInt(lotSize, 10),
+          issuePrice: parseFloat(issuePrice),
+          openDate,
+          closeDate,
+        },
+        adminInfo
+      );
 
       setSuccess(`Created IPO "${name.trim()}" successfully!`);
       setShowCreateModal(false);
@@ -90,7 +99,7 @@ export default function AdminPage() {
   const handleDeleteIPO = async (ipoId: string, ipoName: string) => {
     if (!confirm(`Are you sure you want to permanently delete "${ipoName}" and all its investor allocations?`)) return;
     try {
-      await deleteIPO(ipoId);
+      await deleteIPO(ipoId, ipoName, adminInfo);
       setSuccess(`Deleted "${ipoName}" successfully.`);
       setTimeout(() => setSuccess(''), 5000);
     } catch (err: unknown) {
@@ -128,14 +137,16 @@ export default function AdminPage() {
   const handleSaveScrapedIPO = async (ipo: ScrapedIPO, index: number) => {
     setSavingIndex(index);
     try {
-      await createIPO({
-        name: ipo.name,
-        lotSize: ipo.lotSize,
-        issuePrice: ipo.issuePrice,
-        openDate: ipo.openDate,
-        closeDate: ipo.closeDate,
-      });
-      // Remove saved IPO from list
+      await createIPO(
+        {
+          name: ipo.name,
+          lotSize: ipo.lotSize,
+          issuePrice: ipo.issuePrice,
+          openDate: ipo.openDate,
+          closeDate: ipo.closeDate,
+        },
+        adminInfo
+      );
       setFetchedIPOs((prev) => prev.filter((_, i) => i !== index));
       setSuccess(`Saved "${ipo.name}" to database!`);
       setTimeout(() => setSuccess(''), 4000);
@@ -145,8 +156,6 @@ export default function AdminPage() {
       setSavingIndex(null);
     }
   };
-
-  // ─── Status Badge ─────────────────────────────────────────────────
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -172,6 +181,13 @@ export default function AdminPage() {
           <p className="text-sm text-slate-500">Create, fetch, manage, and delete IPO syndication deals.</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setShowLogModal(true)}
+            className="btn-secondary flex items-center gap-2"
+            id="admin-view-logs-btn"
+          >
+            📋 Action Logs
+          </button>
           <button
             onClick={() => {
               setShowFetchModal(true);
@@ -420,7 +436,6 @@ export default function AdminPage() {
             </div>
           ) : (
             <>
-              {/* Source & Warning Info */}
               <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-xs">
                 <p className="text-blue-400 font-medium">
                   📡 Source: {fetchSource} — {fetchedIPOs.length} IPO(s) found
@@ -430,7 +445,6 @@ export default function AdminPage() {
                 )}
               </div>
 
-              {/* Scrollable List */}
               <div className="max-h-[50vh] overflow-y-auto space-y-3 pr-1">
                 {fetchedIPOs.map((ipo, idx) => (
                   <div
@@ -462,6 +476,9 @@ export default function AdminPage() {
           )}
         </div>
       </Modal>
+
+      {/* ═══════ Activity Log Modal ═══════ */}
+      <ActivityLogModal isOpen={showLogModal} onClose={() => setShowLogModal(false)} />
     </div>
   );
 }
