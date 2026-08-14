@@ -1,5 +1,4 @@
 import { NextResponse } from 'next/server';
-import * as cheerio from 'cheerio';
 
 export interface ScrapedIPO {
   name: string;
@@ -7,82 +6,77 @@ export interface ScrapedIPO {
   lotSize: number;
   openDate: string;
   closeDate: string;
+  symbol?: string;
 }
 
 export async function GET() {
   try {
-    // 1. Use the most up-to-date mainboard IPO URL
-    const targetUrl = 'https://www.chittorgarh.com/report/ipo-in-india-list-main-board-sme/82/mainboard/';
+    const rapidApiKey = 'fe41e305camsh2f8ef2f20e117e7p1fc751jsndfb091ef8899';
+    const rapidApiHost = 'indian-ipos1.p.rapidapi.com';
 
-    // 2. Add realistic browser headers to bypass basic bot detection
-    const response = await fetch(targetUrl, {
+    // Dedicated RapidAPI Indian IPOs API
+    const response = await fetch('https://indian-ipos1.p.rapidapi.com/closed-ipos', {
       headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
+        'x-rapidapi-host': rapidApiHost,
+        'x-rapidapi-key': rapidApiKey,
+        'Content-Type': 'application/json',
       },
-      // Cache for 1 hour so we don't spam their servers
       next: { revalidate: 3600 },
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to fetch webpage: Status ${response.status}`);
+      throw new Error(`RapidAPI request failed with status ${response.status}`);
     }
 
-    const html = await response.text();
-    const $ = cheerio.load(html);
-    const ipos: ScrapedIPO[] = [];
+    const data = await response.json();
 
-    // 3. Target the tables flexibly
-    $('table.table-bordered tbody tr, table.table tbody tr').each((_, element) => {
-      const tds = $(element).find('td');
+    if (!Array.isArray(data)) {
+      throw new Error('Invalid JSON response format from RapidAPI');
+    }
 
-      // Ensure the row has enough columns to be a valid data row
-      if (tds.length >= 5) {
-        const name = $(tds[0]).text().trim();
-        const openDate = $(tds[1]).text().trim() || $(tds[2]).text().trim();
-        const closeDate = $(tds[2]).text().trim() || $(tds[3]).text().trim();
-        const issuePriceRaw = $(tds[4]).text().trim() || $(tds[3]).text().trim();
-        const lotSizeRaw = $(tds[5]).text().trim() || $(tds[4]).text().trim();
-
-        // Filter out empty rows or table header rows that might get caught
-        if (name && !name.toLowerCase().includes('company name') && name.length > 2) {
-          // Extract numeric upper price band (e.g., "₹390 to ₹410" -> 410)
-          const priceMatches = issuePriceRaw.match(/\d+(\.\d+)?/g);
-          let issuePrice = 100;
-          if (priceMatches && priceMatches.length > 0) {
-            issuePrice = parseFloat(priceMatches[priceMatches.length - 1]);
-          }
-
-          // Extract numeric lot size (e.g., "38 Shares" -> 38)
-          const lotMatches = lotSizeRaw.match(/\d+/g);
-          let lotSize = 1;
-          if (lotMatches && lotMatches.length > 0) {
-            lotSize = parseInt(lotMatches[0], 10);
-          }
-
-          ipos.push({
-            name: name.replace(/\s+/g, ' '),
-            openDate: openDate || 'N/A',
-            closeDate: closeDate || 'N/A',
-            issuePrice: isNaN(issuePrice) ? 100 : issuePrice,
-            lotSize: isNaN(lotSize) ? 1 : lotSize,
-          });
+    const ipos: ScrapedIPO[] = data
+      .map((item: any) => {
+        const name = (item.name || '').trim();
+        const priceMatches = (item.priceRange || '').match(/\d+(\.\d+)?/g);
+        let issuePrice = 100;
+        if (priceMatches && priceMatches.length > 0) {
+          issuePrice = parseFloat(priceMatches[priceMatches.length - 1]);
         }
-      }
-    });
+
+        // Clean raw date string (e.g. "12th – 14th Aug 2026")
+        let openDate = 'N/A';
+        let closeDate = 'N/A';
+        if (item.ipoDate) {
+          const dateLines = item.ipoDate.split('\n');
+          const cleanDateStr = (dateLines[dateLines.length - 1] || '').trim();
+          if (cleanDateStr) {
+            const parts = cleanDateStr.split('–');
+            openDate = (parts[0] || '').trim();
+            closeDate = (parts[1] || parts[0] || '').trim();
+          }
+        }
+
+        return {
+          name,
+          symbol: item.symbol || '',
+          issuePrice: isNaN(issuePrice) ? 100 : issuePrice,
+          lotSize: 15,
+          openDate: openDate || 'N/A',
+          closeDate: closeDate || 'N/A',
+        };
+      })
+      .filter((item: ScrapedIPO) => item.name && item.name.length > 1);
 
     return NextResponse.json({
       success: true,
-      source: 'Chittorgarh Mainboard IPO List',
+      source: 'RapidAPI Indian IPOs Dedicated API',
       count: ipos.length,
       ipos,
       data: ipos,
     });
   } catch (error: unknown) {
-    const errorMsg = error instanceof Error ? error.message : 'Scraping error';
-    console.error('Scraping error:', errorMsg);
+    const errorMsg = error instanceof Error ? error.message : 'API request failed';
+    console.error('RapidAPI Fetch Error:', errorMsg);
     return NextResponse.json(
       { success: false, error: errorMsg, ipos: [], data: [] },
       { status: 500 }
