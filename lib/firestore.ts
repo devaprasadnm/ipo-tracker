@@ -27,7 +27,9 @@ export type InvestmentCategory = 'RETAIL' | 'HNI' | 'sHNI' | 'bHNI' | 'SME';
 export interface IPO {
   id: string;
   name: string;
-  lotSize: number;
+  sharesPerLot: number;
+  numberOfLots: number;
+  lotSize: number; // kept for backward compatibility (sharesPerLot)
   issuePrice: number;
   openDate: string;
   closeDate: string;
@@ -35,6 +37,18 @@ export interface IPO {
   totalInvested: number;
   netProfit: number;
   createdAt: Timestamp;
+}
+
+export interface IPOApplication {
+  id: string;
+  ipoId: string;
+  uid: string;
+  userEmail: string;
+  userDisplayName: string;
+  category: InvestmentCategory;
+  lotsApplied: number;
+  amount: number;
+  allotmentStatus: 'APPLIED' | 'ALLOTTED' | 'NOT_ALLOTTED';
 }
 
 export interface IPOInvestment {
@@ -45,9 +59,9 @@ export interface IPOInvestment {
   userDisplayName: string;
   investedAmount: number;
   profitEarned: number;
-  category: InvestmentCategory;
-  lotsApplied: number;
-  allotmentStatus: 'APPLIED' | 'ALLOTTED' | 'NOT_ALLOTTED';
+  category?: InvestmentCategory;
+  lotsApplied?: number;
+  allotmentStatus: 'CONTRIBUTOR' | 'APPLIED' | 'ALLOTTED' | 'NOT_ALLOTTED';
 }
 
 export interface UserInfo {
@@ -202,8 +216,163 @@ export function useIPOInvestments(ipoId: string) {
 }
 
 /**
- * Subscribe to all investments for a specific user (by UID, Email, or Display Name for user dashboard).
+ * Subscribe to demat applications for a specific IPO.
+ * Also synthesizes applications from ipo_investments if ipo_applications is empty.
  */
+export function useIPOApplications(ipoId: string) {
+  const [applications, setApplications] = useState<IPOApplication[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !ipoId) { setLoading(false); return; }
+    const db = getDbInstance();
+    const qApp = query(collection(db, 'ipo_applications'), where('ipoId', '==', ipoId));
+
+    const unsubscribeApps = onSnapshot(qApp, (appSnap) => {
+      if (!appSnap.empty) {
+        setApplications(appSnap.docs.map((d) => ({ id: d.id, ...d.data() } as IPOApplication)));
+        setLoading(false);
+      } else {
+        // Fallback: Check ipo_investments for category/lotsApplied
+        const qInv = query(collection(db, 'ipo_investments'), where('ipoId', '==', ipoId));
+        getDocs(qInv).then((invSnap) => {
+          const fallbackApps: IPOApplication[] = invSnap.docs
+            .map((d) => {
+              const data = d.data() as IPOInvestment;
+              if (data.category && data.lotsApplied) {
+                return {
+                  id: d.id,
+                  ipoId: data.ipoId,
+                  uid: data.uid,
+                  userEmail: data.userEmail,
+                  userDisplayName: data.userDisplayName,
+                  category: data.category,
+                  lotsApplied: data.lotsApplied,
+                  amount: data.investedAmount,
+                  allotmentStatus: data.allotmentStatus === 'CONTRIBUTOR' ? 'APPLIED' : (data.allotmentStatus || 'APPLIED'),
+                };
+              }
+              return null;
+            })
+            .filter((a): a is IPOApplication => a !== null);
+          setApplications(fallbackApps);
+          setLoading(false);
+        });
+      }
+    });
+
+    return () => unsubscribeApps();
+  }, [ipoId]);
+
+  return { applications, loading };
+}
+
+/**
+ * Create a new IPO entry. Admin only.
+ */
+export async function createIPO(
+  data: {
+    name: string;
+    sharesPerLot?: number;
+    numberOfLots?: number;
+    lotSize?: number;
+    issuePrice: number;
+    openDate: string;
+    closeDate: string;
+  },
+  adminInfo?: { email: string; name: string }
+) {
+  const db = getDbInstance();
+  const sharesPerLot = data.sharesPerLot || data.lotSize || 1;
+  const numberOfLots = data.numberOfLots || 1;
+  const lotSize = sharesPerLot;
+
+  const docRef = await addDoc(collection(db, 'ipos'), {
+    ...data,
+    sharesPerLot,
+    numberOfLots,
+    lotSize,
+    status: 'OPEN',
+    totalInvested: 0,
+    netProfit: 0,
+    createdAt: serverTimestamp(),
+  });
+
+  if (adminInfo) {
+    await logAdminAction(
+      adminInfo.email,
+      adminInfo.name,
+      'CREATE_IPO',
+      `Created new IPO entry: ${data.name} (Price: ₹${data.issuePrice}, Shares/Lot: ${sharesPerLot}, Lots: ${numberOfLots})`,
+      data.name
+    );
+  }
+
+  return docRef.id;
+}
+
+/**
+ * Add a Demat Application for an IPO.
+ */
+export async function addIPOApplication(
+  ipoId: string,
+  ipoName: string,
+  uid: string,
+  userEmail: string,
+  userDisplayName: string,
+  category: InvestmentCategory,
+  lotsApplied: number,
+  amount: number,
+  allotmentStatus: 'APPLIED' | 'ALLOTTED' | 'NOT_ALLOTTED' = 'APPLIED',
+  adminInfo?: { email: string; name: string }
+) {
+  const db = getDbInstance();
+  const appRef = doc(collection(db, 'ipo_applications'));
+  await addDoc(collection(db, 'ipo_applications'), {
+    ipoId,
+    uid,
+    userEmail,
+    userDisplayName,
+    category,
+    lotsApplied,
+    amount,
+    allotmentStatus,
+    createdAt: serverTimestamp(),
+  });
+
+  if (adminInfo) {
+    await logAdminAction(
+      adminInfo.email,
+      adminInfo.name,
+      'ALLOCATE_FUNDS',
+      `Logged Demat Application: ${userDisplayName} (${category}, ${lotsApplied} lot(s), ₹${amount.toLocaleString('en-IN')})`,
+      ipoName
+    );
+  }
+}
+
+/**
+ * Remove a Demat Application.
+ */
+export async function removeIPOApplication(
+  applicationId: string,
+  ipoName: string,
+  userDisplayName: string,
+  adminInfo?: { email: string; name: string }
+) {
+  const db = getDbInstance();
+  await deleteDoc(doc(db, 'ipo_applications', applicationId));
+
+  if (adminInfo) {
+    await logAdminAction(
+      adminInfo.email,
+      adminInfo.name,
+      'UPDATE_INVESTMENT',
+      `Removed Demat Application for ${userDisplayName}`,
+      ipoName
+    );
+  }
+}
 export function useUserInvestments(
   uid: string | undefined,
   userEmail?: string | undefined,
@@ -279,41 +448,6 @@ export function useAllUsers() {
 // ─── Mutation Functions ─────────────────────────────────────────────────────────
 
 /**
- * Create a new IPO entry. Admin only.
- */
-export async function createIPO(
-  data: {
-    name: string;
-    lotSize: number;
-    issuePrice: number;
-    openDate: string;
-    closeDate: string;
-  },
-  adminInfo?: { email: string; name: string }
-) {
-  const db = getDbInstance();
-  const docRef = await addDoc(collection(db, 'ipos'), {
-    ...data,
-    status: 'OPEN',
-    totalInvested: 0,
-    netProfit: 0,
-    createdAt: serverTimestamp(),
-  });
-
-  if (adminInfo) {
-    await logAdminAction(
-      adminInfo.email,
-      adminInfo.name,
-      'CREATE_IPO',
-      `Created new IPO entry: ${data.name} (Price: ₹${data.issuePrice}, Lot: ${data.lotSize})`,
-      data.name
-    );
-  }
-
-  return docRef.id;
-}
-
-/**
  * Update IPO status (OPEN → APPLIED → ALLOTTED).
  */
 export async function updateIPOStatus(
@@ -346,9 +480,9 @@ export async function addInvestment(
   userEmail: string,
   userDisplayName: string,
   investedAmount: number,
-  category: InvestmentCategory = 'RETAIL',
-  lotsApplied: number = 1,
-  allotmentStatus: 'APPLIED' | 'ALLOTTED' | 'NOT_ALLOTTED' = 'APPLIED',
+  category?: InvestmentCategory,
+  lotsApplied?: number,
+  allotmentStatus: 'CONTRIBUTOR' | 'APPLIED' | 'ALLOTTED' | 'NOT_ALLOTTED' = 'CONTRIBUTOR',
   adminInfo?: { email: string; name: string }
 ) {
   const db = getDbInstance();
@@ -362,8 +496,8 @@ export async function addInvestment(
     userDisplayName,
     investedAmount,
     profitEarned: 0,
-    category,
-    lotsApplied,
+    ...(category ? { category } : {}),
+    ...(lotsApplied !== undefined ? { lotsApplied } : {}),
     allotmentStatus,
   });
 
@@ -429,7 +563,7 @@ export async function updateInvestmentAmount(
   newAmount: number,
   category?: InvestmentCategory,
   lotsApplied?: number,
-  allotmentStatus?: 'APPLIED' | 'ALLOTTED' | 'NOT_ALLOTTED',
+  allotmentStatus?: 'CONTRIBUTOR' | 'APPLIED' | 'ALLOTTED' | 'NOT_ALLOTTED',
   adminInfo?: { email: string; name: string }
 ) {
   const db = getDbInstance();

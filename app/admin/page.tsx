@@ -27,10 +27,12 @@ export default function AdminPage() {
   // Create Modal
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [name, setName] = useState('');
-  const [lotSize, setLotSize] = useState('');
+  const [sharesPerLot, setSharesPerLot] = useState('38');
+  const [numberOfLots, setNumberOfLots] = useState('1');
   const [issuePrice, setIssuePrice] = useState('');
   const [openDate, setOpenDate] = useState('');
   const [closeDate, setCloseDate] = useState('');
+  const [appliedPeople, setAppliedPeople] = useState<Array<{ uid: string; category: 'RETAIL' | 'HNI' | 'sHNI' | 'bHNI' | 'SME'; lotsApplied: number }>>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -65,31 +67,62 @@ export default function AdminPage() {
     e.preventDefault();
     setError('');
 
-    if (!name.trim() || !lotSize || !issuePrice || !openDate || !closeDate) {
-      setError('Please fill in all fields.');
+    if (!name.trim() || !sharesPerLot || !numberOfLots || !issuePrice || !openDate || !closeDate) {
+      setError('Please fill in all required fields.');
       return;
     }
 
     setSubmitting(true);
     try {
-      await createIPO(
+      const priceNum = parseFloat(issuePrice);
+      const splNum = parseInt(sharesPerLot, 10);
+      const nolNum = parseInt(numberOfLots, 10);
+
+      const createdId = await createIPO(
         {
           name: name.trim(),
-          lotSize: parseInt(lotSize, 10),
-          issuePrice: parseFloat(issuePrice),
+          sharesPerLot: splNum,
+          numberOfLots: nolNum,
+          lotSize: splNum,
+          issuePrice: priceNum,
           openDate,
           closeDate,
         },
         adminInfo
       );
 
+      // Save applied people if any
+      if (appliedPeople.length > 0) {
+        const { addIPOApplication } = await import('@/lib/firestore');
+        for (const item of appliedPeople) {
+          const u = users.find((usr) => usr.uid === item.uid);
+          if (u) {
+            const appAmt = priceNum * splNum * item.lotsApplied;
+            await addIPOApplication(
+              createdId,
+              name.trim(),
+              u.uid,
+              u.email,
+              u.displayName,
+              item.category,
+              item.lotsApplied,
+              appAmt,
+              'APPLIED',
+              adminInfo
+            );
+          }
+        }
+      }
+
       setSuccess(`Created IPO "${name.trim()}" successfully!`);
       setShowCreateModal(false);
       setName('');
-      setLotSize('');
+      setSharesPerLot('38');
+      setNumberOfLots('1');
       setIssuePrice('');
       setOpenDate('');
       setCloseDate('');
+      setAppliedPeople([]);
       setTimeout(() => setSuccess(''), 5000);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to create IPO');
@@ -342,7 +375,7 @@ export default function AdminPage() {
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div>
               <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
                 Issue Price (₹)
@@ -360,19 +393,43 @@ export default function AdminPage() {
             </div>
             <div>
               <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
-                Lot Size
+                Shares per Lot
               </label>
               <input
                 type="number"
                 className="input-field"
                 placeholder="38"
-                value={lotSize}
-                onChange={(e) => setLotSize(e.target.value)}
-                id="ipo-lot-size-input"
+                value={sharesPerLot}
+                onChange={(e) => setSharesPerLot(e.target.value)}
+                id="ipo-shares-per-lot-input"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
+                Number of Lots
+              </label>
+              <input
+                type="number"
+                className="input-field"
+                placeholder="1"
+                value={numberOfLots}
+                onChange={(e) => setNumberOfLots(e.target.value)}
+                id="ipo-number-of-lots-input"
                 required
               />
             </div>
           </div>
+
+          {/* Calculated Total Application Amount Callout */}
+          {issuePrice && sharesPerLot && numberOfLots && (
+            <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs flex justify-between items-center">
+              <span className="text-slate-300 font-medium">Single Lot Application Amount:</span>
+              <span className="text-emerald-400 font-bold text-sm">
+                {formatCurrency(parseFloat(issuePrice || '0') * parseInt(sharesPerLot || '0', 10) * parseInt(numberOfLots || '0', 10))}
+              </span>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -401,6 +458,95 @@ export default function AdminPage() {
                 required
               />
             </div>
+          </div>
+
+          {/* Applied People Section */}
+          <div className="pt-2 border-t border-white/[0.08]">
+            <div className="flex items-center justify-between mb-2">
+              <div>
+                <span className="text-xs font-bold text-white uppercase tracking-wider">👥 Applied People / Category Allotments</span>
+                <p className="text-[11px] text-slate-400">Add multiple applicants applying across different categories</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setAppliedPeople([...appliedPeople, { uid: users[0]?.uid || '', category: 'RETAIL', lotsApplied: 1 }])}
+                className="text-xs px-2.5 py-1 rounded-lg bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20 transition-colors border border-emerald-500/20"
+              >
+                + Add Applied Person
+              </button>
+            </div>
+
+            {appliedPeople.length === 0 ? (
+              <p className="text-[11px] text-slate-500 italic py-1">No applicants added yet. Click &quot;+ Add Applied Person&quot; or add later on the detail page.</p>
+            ) : (
+              <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                {appliedPeople.map((person, idx) => {
+                  const pNum = parseFloat(issuePrice || '0');
+                  const sNum = parseInt(sharesPerLot || '0', 10);
+                  const personTotal = pNum * sNum * person.lotsApplied;
+
+                  return (
+                    <div key={idx} className="p-2.5 rounded-lg bg-white/[0.03] border border-white/[0.06] flex items-center justify-between gap-2 text-xs">
+                      <select
+                        value={person.uid}
+                        onChange={(e) => {
+                          const copy = [...appliedPeople];
+                          copy[idx].uid = e.target.value;
+                          setAppliedPeople(copy);
+                        }}
+                        className="input-field py-1 text-xs bg-slate-900 flex-1 min-w-[120px]"
+                      >
+                        {users.map((u) => (
+                          <option key={u.uid} value={u.uid}>{u.displayName} ({u.email})</option>
+                        ))}
+                      </select>
+
+                      <select
+                        value={person.category}
+                        onChange={(e) => {
+                          const copy = [...appliedPeople];
+                          copy[idx].category = e.target.value as any;
+                          setAppliedPeople(copy);
+                        }}
+                        className="input-field py-1 text-xs bg-slate-900 w-28"
+                      >
+                        <option value="RETAIL">Retail</option>
+                        <option value="HNI">HNI</option>
+                        <option value="sHNI">sHNI</option>
+                        <option value="bHNI">bHNI</option>
+                        <option value="SME">SME</option>
+                      </select>
+
+                      <input
+                        type="number"
+                        min="1"
+                        placeholder="Lots"
+                        value={person.lotsApplied}
+                        onChange={(e) => {
+                          const copy = [...appliedPeople];
+                          copy[idx].lotsApplied = parseInt(e.target.value || '1', 10);
+                          setAppliedPeople(copy);
+                        }}
+                        className="input-field py-1 text-xs w-16"
+                      />
+
+                      <span className="text-emerald-400 font-bold whitespace-nowrap text-[11px]">
+                        {formatCurrency(personTotal || 0)}
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={() => setAppliedPeople(appliedPeople.filter((_, i) => i !== idx))}
+                        className="text-rose-400 hover:text-rose-300 text-xs px-1"
+                        title="Remove"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {error && <p className="text-rose-400 text-xs mt-2">⚠️ {error}</p>}

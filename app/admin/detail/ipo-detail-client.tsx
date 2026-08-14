@@ -7,10 +7,13 @@ import { useAuth } from '@/lib/auth-context';
 import {
   useIPO,
   useIPOInvestments,
+  useIPOApplications,
   useAllUsers,
   addInvestment,
   removeInvestment,
   updateInvestmentAmount,
+  addIPOApplication,
+  removeIPOApplication,
   resolveIPO,
   updateIPOStatus,
   IPO,
@@ -63,15 +66,17 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
 
   const { ipo, loading: ipoLoading } = useIPO(ipoId);
   const { investments, loading: investmentsLoading } = useIPOInvestments(ipoId);
+  const { applications, loading: applicationsLoading } = useIPOApplications(ipoId);
   const { users, loading: usersLoading } = useAllUsers();
 
   const [activeView, setActiveView] = useState<'TABLE' | 'MINDMAP'>('TABLE');
   const [showAddModal, setShowAddModal] = useState(false);
+  const [addModalTab, setAddModalTab] = useState<'INVESTOR' | 'APPLICATION'>('INVESTOR');
   const [showResolveModal, setShowResolveModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showLogModal, setShowLogModal] = useState(false);
 
-  // Add Investor Form State
+  // Form State
   const [selectedUid, setSelectedUid] = useState('');
   const [investedAmount, setInvestedAmount] = useState('');
   const [category, setCategory] = useState<InvestmentCategory>('RETAIL');
@@ -82,9 +87,6 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
   const [editInvestmentId, setEditInvestmentId] = useState('');
   const [editOldAmount, setEditOldAmount] = useState(0);
   const [editNewAmount, setEditNewAmount] = useState('');
-  const [editCategory, setEditCategory] = useState<InvestmentCategory>('RETAIL');
-  const [editLotsApplied, setEditLotsApplied] = useState('1');
-  const [editAllotmentStatus, setEditAllotmentStatus] = useState<'APPLIED' | 'ALLOTTED' | 'NOT_ALLOTTED'>('APPLIED');
   const [editUserName, setEditUserName] = useState('');
 
   const [netProfitInput, setNetProfitInput] = useState('');
@@ -97,13 +99,28 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
     if (!authLoading && userData && !userData.isAdmin) router.push('/dashboard');
   }, [user, userData, authLoading, router]);
 
-  if (authLoading || ipoLoading || investmentsLoading || usersLoading) return <LoadingSpinner />;
+  if (authLoading || ipoLoading || investmentsLoading || applicationsLoading || usersLoading) {
+    return <LoadingSpinner />;
+  }
   if (!user || !userData || !userData.isAdmin || !ipo) return null;
 
   const runningTotal = investments.reduce((sum, inv) => sum + inv.investedAmount, 0);
+  const totalAppsAmount = applications.reduce((sum, app) => sum + app.amount, 0);
+  const totalLotsApplied = applications.reduce((sum, app) => sum + (app.lotsApplied || 1), 0);
+  const sharesPerLot = ipo.sharesPerLot || ipo.lotSize || 1;
   const adminInfo = { email: userData.email, name: userData.displayName };
 
-  // ─── Add Investor ─────────────────────────────────────────────────
+  // Category Breakup Summary
+  const categoryBreakup = applications.reduce((acc, app) => {
+    const cat = app.category || 'RETAIL';
+    if (!acc[cat]) acc[cat] = { count: 0, lots: 0, amount: 0 };
+    acc[cat].count += 1;
+    acc[cat].lots += app.lotsApplied || 1;
+    acc[cat].amount += app.amount;
+    return acc;
+  }, {} as Record<InvestmentCategory, { count: number; lots: number; amount: number }>);
+
+  // ─── Add Capital Contributor / Investor ─────────────────────────────
 
   const handleAddInvestor = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -116,13 +133,7 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
 
     const amt = parseFloat(investedAmount);
     if (isNaN(amt) || amt <= 0) {
-      setError('Please enter a valid investment amount.');
-      return;
-    }
-
-    const lots = parseInt(lotsApplied, 10);
-    if (isNaN(lots) || lots < 1) {
-      setError('Please enter a valid lot size count.');
+      setError('Please enter a valid contribution amount.');
       return;
     }
 
@@ -141,18 +152,15 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
         targetUser.email,
         targetUser.displayName,
         amt,
-        category,
-        lots,
-        allotmentStatus,
+        undefined,
+        undefined,
+        'CONTRIBUTOR',
         adminInfo
       );
-      setSuccess(`Allocated ${formatCurrency(amt)} (${category}, ${lots} lot(s)) to ${targetUser.email}`);
+      setSuccess(`Added ${targetUser.displayName} as Capital Contributor (${formatCurrency(amt)})`);
       setShowAddModal(false);
       setSelectedUid('');
       setInvestedAmount('');
-      setCategory('RETAIL');
-      setLotsApplied('1');
-      setAllotmentStatus('APPLIED');
       setTimeout(() => setSuccess(''), 5000);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Failed to add investor');
@@ -161,28 +169,89 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
     }
   };
 
-  // ─── Remove Investor ──────────────────────────────────────────────
+  // ─── Add Demat Application ────────────────────────────────────────
 
-  const handleRemoveInvestor = async (investmentId: string, userDisplayName: string, userEmail: string, amt: number) => {
-    if (!confirm(`Remove ${userDisplayName}'s allocation of ${formatCurrency(amt)}?`)) return;
+  const handleAddApplication = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+
+    if (!selectedUid) {
+      setError('Please select an applicant.');
+      return;
+    }
+
+    const lots = parseInt(lotsApplied, 10);
+    if (isNaN(lots) || lots < 1) {
+      setError('Please enter valid lots count.');
+      return;
+    }
+
+    const targetUser = users.find((u) => u.uid === selectedUid);
+    if (!targetUser) {
+      setError('User not found.');
+      return;
+    }
+
+    const calculatedAmt = ipo.issuePrice * sharesPerLot * lots;
+
+    setSubmitting(true);
     try {
-      await removeInvestment(investmentId, ipoId, ipo.name, userDisplayName, amt, adminInfo);
-      setSuccess(`Removed allocation for ${userDisplayName}`);
+      await addIPOApplication(
+        ipoId,
+        ipo.name,
+        targetUser.uid,
+        targetUser.email,
+        targetUser.displayName,
+        category,
+        lots,
+        calculatedAmt,
+        allotmentStatus,
+        adminInfo
+      );
+      setSuccess(`Logged ${category} application for ${targetUser.displayName} (${lots} lot(s), ${formatCurrency(calculatedAmt)})`);
+      setShowAddModal(false);
+      setSelectedUid('');
+      setLotsApplied('1');
+      setCategory('RETAIL');
+      setAllotmentStatus('APPLIED');
       setTimeout(() => setSuccess(''), 5000);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to remove investment');
+      setError(err instanceof Error ? err.message : 'Failed to add application');
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  // ─── Edit Investment Amount ───────────────────────────────────────
+  // ─── Remove Investor / Application ───────────────────────────────
+
+  const handleRemoveInvestor = async (investmentId: string, userDisplayName: string, amt: number) => {
+    if (!confirm(`Remove ${userDisplayName}'s contribution of ${formatCurrency(amt)}?`)) return;
+    try {
+      await removeInvestment(investmentId, ipoId, ipo.name, userDisplayName, amt, adminInfo);
+      setSuccess(`Removed contribution for ${userDisplayName}`);
+      setTimeout(() => setSuccess(''), 5000);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to remove contribution');
+    }
+  };
+
+  const handleRemoveApplication = async (appId: string, userDisplayName: string) => {
+    if (!confirm(`Remove application for ${userDisplayName}?`)) return;
+    try {
+      await removeIPOApplication(appId, ipo.name, userDisplayName, adminInfo);
+      setSuccess(`Removed application for ${userDisplayName}`);
+      setTimeout(() => setSuccess(''), 5000);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to remove application');
+    }
+  };
+
+  // ─── Edit Investor Amount ─────────────────────────────────────────
 
   const openEditModal = (inv: (typeof investments)[0]) => {
     setEditInvestmentId(inv.id);
     setEditOldAmount(inv.investedAmount);
     setEditNewAmount(String(inv.investedAmount));
-    setEditCategory(inv.category || 'RETAIL');
-    setEditLotsApplied(String(inv.lotsApplied || 1));
-    setEditAllotmentStatus(inv.allotmentStatus || 'APPLIED');
     setEditUserName(inv.userDisplayName);
     setShowEditModal(true);
     setError('');
@@ -198,12 +267,6 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
       return;
     }
 
-    const lots = parseInt(editLotsApplied, 10);
-    if (isNaN(lots) || lots < 1) {
-      setError('Please enter a valid lot count.');
-      return;
-    }
-
     setSubmitting(true);
     try {
       await updateInvestmentAmount(
@@ -213,12 +276,12 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
         editUserName,
         editOldAmount,
         newAmt,
-        editCategory,
-        lots,
-        editAllotmentStatus,
+        undefined,
+        undefined,
+        'CONTRIBUTOR',
         adminInfo
       );
-      setSuccess(`Updated ${editUserName}'s allocation to ${formatCurrency(newAmt)} (${editCategory}, ${lots} lot(s))`);
+      setSuccess(`Updated ${editUserName}'s contribution to ${formatCurrency(newAmt)}`);
       setShowEditModal(false);
       setTimeout(() => setSuccess(''), 5000);
     } catch (err: unknown) {
@@ -228,7 +291,7 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
     }
   };
 
-  // ─── Status Change ────────────────────────────────────────────────
+  // ─── Status & Profit Resolution ──────────────────────────────────
 
   const handleStatusChange = async (newStatus: IPO['status']) => {
     try {
@@ -240,138 +303,140 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
     }
   };
 
-  // ─── Resolve IPO ──────────────────────────────────────────────────
-
   const handleResolveIPO = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
     const profit = parseFloat(netProfitInput);
     if (isNaN(profit)) {
-      setError('Please enter a valid net profit or loss amount.');
-      return;
-    }
-
-    if (investments.length === 0) {
-      setError('Cannot resolve an IPO with no investors.');
+      setError('Please enter a valid net profit or loss figure.');
       return;
     }
 
     setSubmitting(true);
     try {
       await resolveIPO(ipoId, ipo.name, profit, adminInfo);
-      setSuccess(`Successfully resolved IPO! Distributed ${formatCurrency(profit)} profit across ${investments.length} investor(s).`);
+      setSuccess(`Resolved deal for "${ipo.name}" with ${profit >= 0 ? 'profit' : 'loss'} of ${formatCurrency(profit)}!`);
       setShowResolveModal(false);
-      setNetProfitInput('');
-      setTimeout(() => setSuccess(''), 7000);
+      setTimeout(() => setSuccess(''), 5000);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : 'Failed to resolve IPO');
+      setError(err instanceof Error ? err.message : 'Failed to resolve deal');
     } finally {
       setSubmitting(false);
     }
   };
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'OPEN':
-        return <span className="badge badge-applied">🟢 Open</span>;
-      case 'APPLIED':
-        return <span className="badge badge-applied">⏳ Applied</span>;
-      case 'ALLOTTED':
-        return <span className="badge badge-allotted">🎯 Allotted</span>;
-      case 'SOLD':
-        return <span className="badge badge-sold">✓ Sold</span>;
-      default:
-        return <span className="badge">{status}</span>;
-    }
-  };
-
   return (
-    <div className="p-6 lg:p-8 max-w-7xl mx-auto">
-      {/* Back & Header */}
-      <div className="mb-6 animate-fadeIn">
-        <Link
-          href="/admin"
-          className="text-xs text-slate-400 hover:text-white transition-colors inline-flex items-center gap-1 mb-3"
-        >
-          ← Back to All IPOs
-        </Link>
-        <div className="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-white">{ipo.name}</h1>
-              {getStatusBadge(ipo.status)}
-            </div>
-            <p className="text-sm text-slate-500 mt-1">
-              Issue Price: {formatCurrency(ipo.issuePrice)} | Lot Size: {ipo.lotSize} shares | Dates: {ipo.openDate} → {ipo.closeDate}
-            </p>
+    <div className="p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
+      {/* Top Header */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <Link href="/admin" className="text-xs text-slate-400 hover:text-white transition-colors flex items-center gap-1 mb-2">
+            ← Back to All IPOs
+          </Link>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-white tracking-tight">{ipo.name}</h1>
+            <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
+              ipo.status === 'OPEN' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' :
+              ipo.status === 'APPLIED' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30' :
+              ipo.status === 'ALLOTTED' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/30' :
+              'bg-purple-500/10 text-purple-400 border border-purple-500/30'
+            }`}>
+              {ipo.status}
+            </span>
           </div>
+          <p className="text-xs text-slate-400 mt-1">
+            Issue Price: <span className="text-white font-semibold">{formatCurrency(ipo.issuePrice)}</span> | Shares/Lot: <span className="text-white font-semibold">{sharesPerLot}</span> | Dates: {ipo.openDate} → {ipo.closeDate}
+          </p>
+        </div>
 
-          <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setShowLogModal(true)}
+            className="text-xs px-3 py-2 rounded-xl bg-white/[0.05] hover:bg-white/[0.1] text-slate-300 transition-colors border border-white/[0.08]"
+          >
+            📋 Action Logs
+          </button>
+          <select
+            value={ipo.status}
+            onChange={(e) => handleStatusChange(e.target.value as IPO['status'])}
+            className="input-field py-1.5 px-3 text-xs bg-slate-900 border-white/10 w-auto"
+          >
+            <option value="OPEN">Mark as OPEN</option>
+            <option value="APPLIED">Mark as APPLIED</option>
+            <option value="ALLOTTED">Mark as ALLOTTED</option>
+            <option value="SOLD">Mark as SOLD</option>
+          </select>
+          {ipo.status !== 'SOLD' && (
             <button
-              onClick={() => setShowLogModal(true)}
-              className="btn-secondary text-xs font-semibold px-3 py-2 flex items-center gap-1.5"
-              id="view-logs-btn"
+              onClick={() => { setShowResolveModal(true); setNetProfitInput(''); setError(''); }}
+              className="btn-amber text-xs px-4 py-2"
             >
-              📋 Action Logs
+              💰 Mark Sold & Distribute Profit
             </button>
+          )}
+        </div>
+      </div>
 
-            {ipo.status !== 'SOLD' && (
-              <select
-                value={ipo.status}
-                onChange={(e) => handleStatusChange(e.target.value as IPO['status'])}
-                className="input-field py-2 text-xs font-semibold bg-white/[0.05]"
-                id="status-change-select"
-              >
-                <option value="OPEN" className="bg-slate-900 text-white">Mark as OPEN</option>
-                <option value="APPLIED" className="bg-slate-900 text-white">Mark as APPLIED</option>
-                <option value="ALLOTTED" className="bg-slate-900 text-white">Mark as ALLOTTED</option>
-              </select>
-            )}
+      {/* Success / Error Alerts */}
+      {error && <div className="p-4 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs">⚠️ {error}</div>}
+      {success && <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs">✅ {success}</div>}
 
-            {ipo.status !== 'SOLD' && (
-              <button
-                onClick={() => {
-                  setShowResolveModal(true);
-                  setError('');
-                }}
-                className="btn-amber text-xs font-semibold px-4 py-2"
-                id="resolve-ipo-modal-btn"
-              >
-                💰 Mark Sold & Distribute Profit
-              </button>
+      {/* 📊 Summary Cards (Image 3 Request) */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* Card 1: Total Capital Pool */}
+        <StatCard
+          label="Total Capital Funds Collected"
+          value={formatCurrency(runningTotal)}
+          icon={<MoneyIcon />}
+          glowColor="emerald"
+          subtext={`${investments.length} Capital Contributor(s)`}
+        />
+
+        {/* Card 2: Total Demat Applications & Category Breakup */}
+        <div className="glass-card p-5 relative overflow-hidden flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Demat Applications</span>
+              <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                {totalLotsApplied} Lots Total
+              </span>
+            </div>
+            <div className="text-2xl font-extrabold text-white">
+              {formatCurrency(totalAppsAmount)}
+            </div>
+          </div>
+
+          {/* Category Breakup Pills */}
+          <div className="mt-3 pt-3 border-t border-white/[0.06] flex flex-wrap gap-1.5 text-[11px]">
+            {Object.keys(categoryBadgeClass).map((catKey) => {
+              const info = categoryBreakup[catKey as InvestmentCategory];
+              if (!info || info.count === 0) return null;
+              const conf = categoryBadgeClass[catKey as InvestmentCategory];
+              return (
+                <span key={catKey} className={`px-2 py-0.5 rounded border text-[10px] font-bold uppercase ${conf}`}>
+                  {catKey}: {info.lots} Lot(s) ({formatCurrency(info.amount)})
+                </span>
+              );
+            })}
+            {applications.length === 0 && (
+              <span className="text-slate-500 text-[11px]">No demat applications logged yet.</span>
             )}
           </div>
         </div>
+
+        {/* Card 3: Net Deal Profit */}
+        <StatCard
+          label="Net Deal Profit / Loss"
+          value={ipo.status === 'SOLD' ? `${ipo.netProfit >= 0 ? '+' : ''}${formatCurrency(ipo.netProfit)}` : 'Pending Sale'}
+          icon={<TrophyIcon />}
+          glowColor={ipo.status === 'SOLD' && ipo.netProfit >= 0 ? 'emerald' : 'rose'}
+          subtext={ipo.status === 'SOLD' ? 'Proportionally distributed to investors' : 'Awaiting sale resolution'}
+        />
       </div>
 
-      {success && (
-        <div className="mb-6 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm animate-fadeIn">
-          ✅ {success}
-        </div>
-      )}
-
-      {/* Stats Summary */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
-        <div className="animate-fadeIn stagger-1 opacity-0">
-          <StatCard label="Total Funds Collected" value={formatCurrency(runningTotal)} icon={<MoneyIcon />} glowColor="emerald" subtext="Sum of all allocated user capital" />
-        </div>
-        <div className="animate-fadeIn stagger-2 opacity-0">
-          <StatCard label="Total Investors" value={`${investments.length}`} icon={<UsersIcon />} glowColor="blue" subtext="Participating members in this deal" />
-        </div>
-        <div className="animate-fadeIn stagger-3 opacity-0">
-          <StatCard
-            label="Net Deal Profit"
-            value={ipo.status === 'SOLD' ? `${ipo.netProfit >= 0 ? '+' : ''}${formatCurrency(ipo.netProfit)}` : 'Pending Sale'}
-            icon={<TrophyIcon />}
-            glowColor={ipo.status === 'SOLD' && ipo.netProfit >= 0 ? 'emerald' : 'rose'}
-            subtext={ipo.status === 'SOLD' ? 'Proportionally distributed' : 'Awaiting resolution'}
-          />
-        </div>
-      </div>
-
-      {/* View Mode Toggle Bar */}
-      <div className="flex items-center justify-between mb-4">
+      {/* View Mode Toggle & Add Button */}
+      <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
         <div className="flex rounded-xl bg-white/[0.04] p-1 border border-white/[0.06]">
           <button
             onClick={() => setActiveView('TABLE')}
@@ -395,7 +460,6 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
           <button
             onClick={() => { setShowAddModal(true); setError(''); }}
             className="btn-primary text-xs px-4 py-2"
-            id="add-investor-btn"
           >
             + Add Investor / Application
           </button>
@@ -405,213 +469,301 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
       {/* ═══════ MIND MAP VIEW ═══════ */}
       {activeView === 'MINDMAP' ? (
         <div className="animate-fadeIn">
-          <IPOMindMap ipoName={ipo.name} totalInvested={runningTotal} investments={investments} />
+          <IPOMindMap ipoName={ipo.name} totalInvested={runningTotal} investments={investments} applications={applications} />
         </div>
       ) : (
         /* ═══════ TABLE VIEW ═══════ */
-        <div className="glass-card-static overflow-hidden mb-8 animate-fadeIn">
-          <div className="p-6 border-b border-white/[0.06]">
-            <h2 className="text-lg font-semibold text-white">Investor Allocations & Hybrid Categories</h2>
-            <p className="text-xs text-slate-500 mt-1">Capital contributions and category breakdown for {ipo.name}</p>
-          </div>
-
-          <div className="overflow-x-auto">
-            {investments.length === 0 ? (
-              <div className="p-12 text-center">
-                <div className="text-3xl mb-3">👥</div>
-                <p className="text-slate-500 text-sm">No investors allocated to this IPO yet.</p>
-                <p className="text-slate-600 text-xs mt-1">Click &quot;+ Add Investor / Application&quot; to log applications.</p>
+        <div className="space-y-8 animate-fadeIn">
+          {/* Table 1: Capital Contributors */}
+          <div className="glass-card-static overflow-hidden">
+            <div className="p-5 border-b border-white/[0.06] flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-bold text-white uppercase tracking-wider">💰 Capital Depositors Pool</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Capital contributed by each person for profit sharing</p>
               </div>
-            ) : (
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Investor</th>
-                    <th>Category</th>
-                    <th>Lots</th>
-                    <th>Invested Amount</th>
-                    <th>Contribution Share</th>
-                    <th>Allotment Status</th>
-                    {ipo.status === 'SOLD' && <th>Profit Earned</th>}
-                    {ipo.status !== 'SOLD' && <th>Actions</th>}
-                  </tr>
-                </thead>
-                <tbody>
-                  {investments.map((inv) => {
-                    const sharePct = runningTotal > 0 ? (inv.investedAmount / runningTotal) * 100 : 0;
-                    const badgeStyle = categoryBadgeClass[inv.category || 'RETAIL'] || categoryBadgeClass.RETAIL;
+              <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-full border border-emerald-500/20">
+                Total Pool: {formatCurrency(runningTotal)}
+              </span>
+            </div>
 
-                    return (
-                      <tr key={inv.id}>
-                        <td>
-                          <div className="font-semibold text-white">{inv.userDisplayName}</div>
-                          <div className="text-[11px] text-slate-400">{inv.userEmail}</div>
-                        </td>
-                        <td>
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${badgeStyle}`}>
-                            {inv.category || 'RETAIL'}
-                          </span>
-                        </td>
-                        <td className="text-slate-300 font-semibold text-xs">{inv.lotsApplied || 1} Lot(s)</td>
-                        <td className="text-emerald-400 font-medium">{formatCurrency(inv.investedAmount)}</td>
-                        <td>
-                          <div className="flex items-center gap-2">
-                            <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden max-w-[80px]">
-                              <div className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full" style={{ width: `${Math.min(sharePct, 100)}%` }} />
-                            </div>
-                            <span className="text-xs text-slate-400">{sharePct.toFixed(1)}%</span>
-                          </div>
-                        </td>
-                        <td>
-                          <span
-                            className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full border ${
-                              inv.allotmentStatus === 'ALLOTTED'
-                                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                                : inv.allotmentStatus === 'NOT_ALLOTTED'
-                                ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
-                                : 'bg-blue-500/10 text-blue-400 border-blue-500/30'
-                            }`}
-                          >
-                            {inv.allotmentStatus || 'APPLIED'}
-                          </span>
-                        </td>
-                        {ipo.status === 'SOLD' && (
-                          <td className={`font-semibold ${inv.profitEarned >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {inv.profitEarned >= 0 ? '+' : ''}{formatCurrency(inv.profitEarned)}
+            <div className="overflow-x-auto">
+              {investments.length === 0 ? (
+                <div className="p-8 text-center text-slate-500 text-xs">
+                  No capital contributors logged yet. Click &quot;+ Add Investor / Application&quot; to deposit capital.
+                </div>
+              ) : (
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Contributor</th>
+                      <th>Invested Capital (₹)</th>
+                      <th>Capital Share</th>
+                      <th>Status</th>
+                      {ipo.status === 'SOLD' && <th>Profit Earned</th>}
+                      {ipo.status !== 'SOLD' && <th>Actions</th>}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {investments.map((inv) => {
+                      const sharePct = runningTotal > 0 ? (inv.investedAmount / runningTotal) * 100 : 0;
+                      return (
+                        <tr key={inv.id}>
+                          <td>
+                            <div className="font-semibold text-white">{inv.userDisplayName}</div>
+                            <div className="text-[11px] text-slate-400">{inv.userEmail}</div>
                           </td>
-                        )}
-                        {ipo.status !== 'SOLD' && (
+                          <td className="text-emerald-400 font-bold">{formatCurrency(inv.investedAmount)}</td>
                           <td>
                             <div className="flex items-center gap-2">
-                              <button
-                                onClick={() => openEditModal(inv)}
-                                className="text-xs px-2.5 py-1 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors"
-                              >
-                                ✏️ Edit
-                              </button>
-                              <button
-                                onClick={() => handleRemoveInvestor(inv.id, inv.userDisplayName, inv.userEmail, inv.investedAmount)}
-                                className="text-xs px-2.5 py-1 rounded bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors"
-                              >
-                                Remove
-                              </button>
+                              <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden max-w-[80px]">
+                                <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${Math.min(sharePct, 100)}%` }} />
+                              </div>
+                              <span className="text-xs text-slate-400">{sharePct.toFixed(1)}%</span>
                             </div>
                           </td>
-                        )}
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            )}
+                          <td>
+                            <span className="text-[10px] font-bold uppercase px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                              Contributor
+                            </span>
+                          </td>
+                          {ipo.status === 'SOLD' && (
+                            <td className={`font-bold ${inv.profitEarned >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {inv.profitEarned >= 0 ? '+' : ''}{formatCurrency(inv.profitEarned)}
+                            </td>
+                          )}
+                          {ipo.status !== 'SOLD' && (
+                            <td>
+                              <div className="flex items-center gap-2">
+                                <button onClick={() => openEditModal(inv)} className="text-xs px-2.5 py-1 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors">
+                                  ✏️ Edit
+                                </button>
+                                <button onClick={() => handleRemoveInvestor(inv.id, inv.userDisplayName, inv.investedAmount)} className="text-xs px-2.5 py-1 rounded bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors">
+                                  Remove
+                                </button>
+                              </div>
+                            </td>
+                          )}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+
+          {/* Table 2: Demat Applications */}
+          <div className="glass-card-static overflow-hidden">
+            <div className="p-5 border-b border-white/[0.06] flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-bold text-white uppercase tracking-wider">📋 Demat Applications (Applied Categories)</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Category allotments and lots applied per person</p>
+              </div>
+              <span className="text-xs font-bold text-blue-400 bg-blue-500/10 px-3 py-1 rounded-full border border-blue-500/20">
+                Total Applications: {formatCurrency(totalAppsAmount)}
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              {applications.length === 0 ? (
+                <div className="p-8 text-center text-slate-500 text-xs">
+                  No demat applications logged for this IPO. Click &quot;+ Add Investor / Application&quot; tab to log applications.
+                </div>
+              ) : (
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Applicant</th>
+                      <th>Category</th>
+                      <th>Lots Applied</th>
+                      <th>Application Value</th>
+                      <th>Allotment Status</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {applications.map((app) => {
+                      const badgeStyle = categoryBadgeClass[app.category || 'RETAIL'];
+                      return (
+                        <tr key={app.id}>
+                          <td>
+                            <div className="font-semibold text-white">{app.userDisplayName}</div>
+                            <div className="text-[11px] text-slate-400">{app.userEmail}</div>
+                          </td>
+                          <td>
+                            <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${badgeStyle}`}>
+                              {app.category}
+                            </span>
+                          </td>
+                          <td className="text-slate-300 font-semibold">{app.lotsApplied} Lot(s)</td>
+                          <td className="text-emerald-400 font-bold">{formatCurrency(app.amount)}</td>
+                          <td>
+                            <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full border ${
+                              app.allotmentStatus === 'ALLOTTED' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' :
+                              app.allotmentStatus === 'NOT_ALLOTTED' ? 'bg-rose-500/10 text-rose-400 border-rose-500/30' :
+                              'bg-blue-500/10 text-blue-400 border-blue-500/30'
+                            }`}>
+                              {app.allotmentStatus || 'APPLIED'}
+                            </span>
+                          </td>
+                          <td>
+                            <button onClick={() => handleRemoveApplication(app.id, app.userDisplayName)} className="text-xs px-2.5 py-1 rounded bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors">
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
           </div>
         </div>
       )}
 
-      {/* ═══════ Add Investor Modal ═══════ */}
-      <Modal isOpen={showAddModal} onClose={() => setShowAddModal(false)} title={`Add Application to ${ipo.name}`}>
-        <form onSubmit={handleAddInvestor} className="space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Select User (by Email)</label>
-            <select value={selectedUid} onChange={(e) => setSelectedUid(e.target.value)} className="input-field bg-white/[0.05]" id="select-user-dropdown" required>
-              <option value="" className="bg-slate-900 text-slate-400 py-2">-- Choose User --</option>
-              {users.map((u) => (
-                <option key={u.uid} value={u.uid} className="bg-slate-900 text-white py-2">{u.displayName} ({u.email})</option>
-              ))}
-            </select>
+      {/* ═══════ Add Investor / Application Modal ═══════ */}
+      <Modal isOpen={showAddModal} onClose={() => setShowAddModal(false)} title={`Add Entry to ${ipo.name}`}>
+        <div className="space-y-4">
+          {/* Modal Mode Selector Tabs */}
+          <div className="flex border-b border-white/[0.08] gap-4">
+            <button
+              onClick={() => setAddModalTab('INVESTOR')}
+              className={`pb-2.5 text-xs font-bold transition-colors ${
+                addModalTab === 'INVESTOR' ? 'text-emerald-400 border-b-2 border-emerald-400' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              💰 Capital Contributor (Investor)
+            </button>
+            <button
+              onClick={() => setAddModalTab('APPLICATION')}
+              className={`pb-2.5 text-xs font-bold transition-colors ${
+                addModalTab === 'APPLICATION' ? 'text-blue-400 border-b-2 border-blue-400' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              📋 Demat Application (Category & Lots)
+            </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Category</label>
-              <select value={category} onChange={(e) => setCategory(e.target.value as InvestmentCategory)} className="input-field bg-white/[0.05]" id="select-category-dropdown">
-                <option value="RETAIL" className="bg-slate-900 text-white">Regular / Retail</option>
-                <option value="HNI" className="bg-slate-900 text-white">HNI Category</option>
-                <option value="sHNI" className="bg-slate-900 text-white">sHNI (Small HNI)</option>
-                <option value="bHNI" className="bg-slate-900 text-white">bHNI (Big HNI)</option>
-                <option value="SME" className="bg-slate-900 text-white">SME Category</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Lots Applied</label>
-              <input type="number" min="1" className="input-field" value={lotsApplied} onChange={(e) => setLotsApplied(e.target.value)} required />
-            </div>
-          </div>
+          {/* TAB 1: CAPITAL CONTRIBUTOR (IMAGE 2 REQUEST) */}
+          {addModalTab === 'INVESTOR' ? (
+            <form onSubmit={handleAddInvestor} className="space-y-4">
+              <p className="text-[11px] text-slate-400">
+                Log money contributed by an investor for profit sharing. Lot size and category are not required here.
+              </p>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Invested Amount (₹)</label>
-              <input type="number" className="input-field" placeholder="e.g. 50000" value={investedAmount} onChange={(e) => setInvestedAmount(e.target.value)} id="invested-amount-input" min="1" required />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Allotment Status</label>
-              <select value={allotmentStatus} onChange={(e) => setAllotmentStatus(e.target.value as typeof allotmentStatus)} className="input-field bg-white/[0.05]">
-                <option value="APPLIED" className="bg-slate-900 text-white">Applied</option>
-                <option value="ALLOTTED" className="bg-slate-900 text-white">Allotted</option>
-                <option value="NOT_ALLOTTED" className="bg-slate-900 text-white">Not Allotted</option>
-              </select>
-            </div>
-          </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Select User (by Email)</label>
+                <select value={selectedUid} onChange={(e) => setSelectedUid(e.target.value)} className="input-field bg-white/[0.05]" required>
+                  <option value="" className="bg-slate-900 text-slate-400">-- Choose User --</option>
+                  {users.map((u) => (
+                    <option key={u.uid} value={u.uid} className="bg-slate-900 text-white">{u.displayName} ({u.email})</option>
+                  ))}
+                </select>
+              </div>
 
-          {error && <p className="text-rose-400 text-xs">⚠️ {error}</p>}
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Invested Amount (₹)</label>
+                <input type="number" className="input-field" placeholder="e.g. 50000" value={investedAmount} onChange={(e) => setInvestedAmount(e.target.value)} min="1" required />
+              </div>
 
-          <div className="flex gap-3 pt-3">
-            <button type="submit" disabled={submitting} className="btn-primary flex-1 py-2.5" id="save-investor-btn">{submitting ? 'Allocating...' : 'Confirm Allocation'}</button>
-            <button type="button" onClick={() => setShowAddModal(false)} className="btn-secondary py-2.5">Cancel</button>
-          </div>
-        </form>
+              <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs flex justify-between">
+                <span className="text-slate-300 font-medium">Allotment Status:</span>
+                <span className="text-emerald-400 font-bold uppercase">Contributor</span>
+              </div>
+
+              {error && <p className="text-rose-400 text-xs">⚠️ {error}</p>}
+
+              <div className="flex gap-3 pt-2">
+                <button type="submit" disabled={submitting} className="btn-primary flex-1 py-2.5">{submitting ? 'Adding...' : 'Confirm Capital Allocation'}</button>
+                <button type="button" onClick={() => setShowAddModal(false)} className="btn-secondary py-2.5">Cancel</button>
+              </div>
+            </form>
+          ) : (
+            /* TAB 2: DEMAT APPLICATION */
+            <form onSubmit={handleAddApplication} className="space-y-4">
+              <p className="text-[11px] text-slate-400">
+                Log official demat applications filed under specific categories for the IPO deal.
+              </p>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Select Applicant (by Email)</label>
+                <select value={selectedUid} onChange={(e) => setSelectedUid(e.target.value)} className="input-field bg-white/[0.05]" required>
+                  <option value="" className="bg-slate-900 text-slate-400">-- Choose User --</option>
+                  {users.map((u) => (
+                    <option key={u.uid} value={u.uid} className="bg-slate-900 text-white">{u.displayName} ({u.email})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Category</label>
+                  <select value={category} onChange={(e) => setCategory(e.target.value as InvestmentCategory)} className="input-field bg-white/[0.05]">
+                    <option value="RETAIL" className="bg-slate-900 text-white">Regular / Retail</option>
+                    <option value="HNI" className="bg-slate-900 text-white">HNI Category</option>
+                    <option value="sHNI" className="bg-slate-900 text-white">sHNI (Small HNI)</option>
+                    <option value="bHNI" className="bg-slate-900 text-white">bHNI (Big HNI)</option>
+                    <option value="SME" className="bg-slate-900 text-white">SME Category</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Lots Applied</label>
+                  <input type="number" min="1" className="input-field" value={lotsApplied} onChange={(e) => setLotsApplied(e.target.value)} required />
+                </div>
+              </div>
+
+              {/* Calculated Application Amount Callout */}
+              <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-xs flex justify-between items-center">
+                <span className="text-slate-300 font-medium">Calculated Application Value:</span>
+                <span className="text-blue-400 font-bold text-sm">
+                  {formatCurrency(ipo.issuePrice * sharesPerLot * parseInt(lotsApplied || '1', 10))}
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">Allotment Status</label>
+                <select value={allotmentStatus} onChange={(e) => setAllotmentStatus(e.target.value as typeof allotmentStatus)} className="input-field bg-white/[0.05]">
+                  <option value="APPLIED" className="bg-slate-900 text-white">Applied</option>
+                  <option value="ALLOTTED" className="bg-slate-900 text-white">Allotted</option>
+                  <option value="NOT_ALLOTTED" className="bg-slate-900 text-white">Not Allotted</option>
+                </select>
+              </div>
+
+              {error && <p className="text-rose-400 text-xs">⚠️ {error}</p>}
+
+              <div className="flex gap-3 pt-2">
+                <button type="submit" disabled={submitting} className="btn-primary flex-1 py-2.5">{submitting ? 'Logging...' : 'Save Demat Application'}</button>
+                <button type="button" onClick={() => setShowAddModal(false)} className="btn-secondary py-2.5">Cancel</button>
+              </div>
+            </form>
+          )}
+        </div>
       </Modal>
 
-      {/* ═══════ Edit Investment Modal ═══════ */}
-      <Modal isOpen={showEditModal} onClose={() => setShowEditModal(false)} title={`Edit Application — ${editUserName}`}>
+      {/* Edit Investor Amount Modal */}
+      <Modal isOpen={showEditModal} onClose={() => setShowEditModal(false)} title={`Edit Contribution — ${editUserName}`}>
         <form onSubmit={handleEditInvestment} className="space-y-4">
           <div className="p-3 rounded-lg bg-white/[0.02] border border-white/[0.06] text-xs flex justify-between">
-            <span className="text-slate-400">Current Amount</span>
+            <span className="text-slate-400">Current Capital Amount</span>
             <span className="text-white font-semibold">{formatCurrency(editOldAmount)}</span>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Category</label>
-              <select value={editCategory} onChange={(e) => setEditCategory(e.target.value as InvestmentCategory)} className="input-field bg-white/[0.05]">
-                <option value="RETAIL" className="bg-slate-900 text-white">Regular / Retail</option>
-                <option value="HNI" className="bg-slate-900 text-white">HNI Category</option>
-                <option value="sHNI" className="bg-slate-900 text-white">sHNI (Small HNI)</option>
-                <option value="bHNI" className="bg-slate-900 text-white">bHNI (Big HNI)</option>
-                <option value="SME" className="bg-slate-900 text-white">SME Category</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Lots Applied</label>
-              <input type="number" min="1" className="input-field" value={editLotsApplied} onChange={(e) => setEditLotsApplied(e.target.value)} required />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">New Amount (₹)</label>
-              <input type="number" className="input-field" value={editNewAmount} onChange={(e) => setEditNewAmount(e.target.value)} min="1" required />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Allotment Status</label>
-              <select value={editAllotmentStatus} onChange={(e) => setEditAllotmentStatus(e.target.value as typeof editAllotmentStatus)} className="input-field bg-white/[0.05]">
-                <option value="APPLIED" className="bg-slate-900 text-white">Applied</option>
-                <option value="ALLOTTED" className="bg-slate-900 text-white">Allotted</option>
-                <option value="NOT_ALLOTTED" className="bg-slate-900 text-white">Not Allotted</option>
-              </select>
-            </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">New Capital Amount (₹)</label>
+            <input type="number" className="input-field" value={editNewAmount} onChange={(e) => setEditNewAmount(e.target.value)} min="1" required />
           </div>
 
           {error && <p className="text-rose-400 text-xs">⚠️ {error}</p>}
 
           <div className="flex gap-3 pt-3">
-            <button type="submit" disabled={submitting} className="btn-blue flex-1 py-2.5" id="save-edit-btn">{submitting ? 'Updating...' : 'Update Application'}</button>
+            <button type="submit" disabled={submitting} className="btn-blue flex-1 py-2.5">{submitting ? 'Updating...' : 'Update Capital Amount'}</button>
             <button type="button" onClick={() => setShowEditModal(false)} className="btn-secondary py-2.5">Cancel</button>
           </div>
         </form>
       </Modal>
 
-      {/* ═══════ Resolve IPO Modal ═══════ */}
+      {/* Resolve IPO Modal */}
       <Modal isOpen={showResolveModal} onClose={() => setShowResolveModal(false)} title={`Resolve IPO: ${ipo.name}`}>
         <form onSubmit={handleResolveIPO} className="space-y-4">
           <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06] text-xs space-y-2">
@@ -626,17 +778,17 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
           </div>
           <div>
             <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Total Net Profit / Loss (₹)</label>
-            <input type="number" step="0.01" className="input-field" placeholder="e.g. 25000 or -5000" value={netProfitInput} onChange={(e) => setNetProfitInput(e.target.value)} id="net-profit-input" required />
+            <input type="number" step="0.01" className="input-field" placeholder="e.g. 25000 or -5000" value={netProfitInput} onChange={(e) => setNetProfitInput(e.target.value)} required />
           </div>
           {error && <p className="text-rose-400 text-xs">⚠️ {error}</p>}
           <div className="flex gap-3 pt-3">
-            <button type="submit" disabled={submitting} className="btn-amber flex-1 py-2.5" id="confirm-resolve-btn">{submitting ? 'Resolving...' : 'Confirm Resolution'}</button>
+            <button type="submit" disabled={submitting} className="btn-amber flex-1 py-2.5">{submitting ? 'Resolving...' : 'Confirm Resolution'}</button>
             <button type="button" onClick={() => setShowResolveModal(false)} className="btn-secondary py-2.5">Cancel</button>
           </div>
         </form>
       </Modal>
 
-      {/* ═══════ Activity Log Modal ═══════ */}
+      {/* Activity Log Modal */}
       <ActivityLogModal isOpen={showLogModal} onClose={() => setShowLogModal(false)} />
     </div>
   );

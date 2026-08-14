@@ -1,13 +1,14 @@
 'use client';
 
 import React from 'react';
-import { IPOInvestment, InvestmentCategory } from '@/lib/firestore';
+import { IPOInvestment, IPOApplication, InvestmentCategory } from '@/lib/firestore';
 import { formatCurrency } from '@/lib/helpers';
 
 interface IPOMindMapProps {
   ipoName: string;
   totalInvested: number;
   investments: IPOInvestment[];
+  applications?: IPOApplication[];
 }
 
 const categoryConfig: Record<
@@ -51,52 +52,67 @@ const categoryConfig: Record<
   },
 };
 
-export default function IPOMindMap({ ipoName, totalInvested, investments }: IPOMindMapProps) {
-  // Group investments by category
-  const grouped = investments.reduce((acc, inv) => {
-    const cat = inv.category || 'RETAIL';
+export default function IPOMindMap({ ipoName, totalInvested, investments, applications = [] }: IPOMindMapProps) {
+  // Use applications if present, else fallback to investments with categories
+  const activeApps = applications.length > 0
+    ? applications
+    : investments
+        .filter((inv) => inv.category)
+        .map((inv) => ({
+          id: inv.id,
+          ipoId: inv.ipoId,
+          uid: inv.uid,
+          userEmail: inv.userEmail,
+          userDisplayName: inv.userDisplayName,
+          category: inv.category || 'RETAIL',
+          lotsApplied: inv.lotsApplied || 1,
+          amount: inv.investedAmount,
+          allotmentStatus: inv.allotmentStatus === 'CONTRIBUTOR' ? 'APPLIED' : (inv.allotmentStatus || 'APPLIED'),
+        }));
+
+  // Group applications by category
+  const grouped = activeApps.reduce((acc, app) => {
+    const cat = app.category || 'RETAIL';
     if (!acc[cat]) acc[cat] = [];
-    acc[cat].push(inv);
+    acc[cat].push(app);
     return acc;
-  }, {} as Record<InvestmentCategory, IPOInvestment[]>);
+  }, {} as Record<InvestmentCategory, IPOApplication[]>);
 
   const categoriesPresent = Object.keys(grouped) as InvestmentCategory[];
+  const totalAppsValue = activeApps.reduce((sum, a) => sum + a.amount, 0);
 
   return (
     <div className="p-6 rounded-2xl bg-[#0b0f19] border border-white/[0.08] overflow-x-auto">
       {/* Header Info */}
       <div className="text-center mb-8">
         <h3 className="text-xs uppercase tracking-widest text-slate-400 font-semibold mb-1">
-          Hybrid Application Mind Map
+          Hybrid Application & Capital Mind Map
         </h3>
-        <p className="text-lg font-bold text-white">Visual Breakdown of Allotments & Categories</p>
+        <p className="text-lg font-bold text-white">Visual Breakdown of Category Applications & Capital Contributors</p>
       </div>
 
       {/* Mind Map Tree Diagram Container */}
-      <div className="min-w-[680px] flex flex-col items-center">
+      <div className="min-w-[720px] flex flex-col items-center">
         {/* ROOT NODE: IPO Deal */}
         <div className="relative group">
-          <div className="px-6 py-4 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 text-white font-bold shadow-xl shadow-emerald-500/20 border border-emerald-400/30 text-center min-w-[220px]">
+          <div className="px-6 py-4 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 text-white font-bold shadow-xl shadow-emerald-500/20 border border-emerald-400/30 text-center min-w-[240px]">
             <div className="text-xs text-emerald-100 uppercase tracking-wider font-semibold">IPO Deal</div>
             <div className="text-lg font-extrabold">{ipoName}</div>
             <div className="text-xs font-semibold text-emerald-200 mt-0.5">
-              Total Raised: {formatCurrency(totalInvested)}
+              Capital Pool: {formatCurrency(totalInvested)} • Applications: {formatCurrency(totalAppsValue)}
             </div>
           </div>
-          {/* Vertical Connecting Line Down */}
-          {categoriesPresent.length > 0 && (
-            <div className="w-0.5 h-8 bg-gradient-to-b from-emerald-500 to-slate-700 mx-auto" />
-          )}
+          <div className="w-0.5 h-8 bg-gradient-to-b from-emerald-500 to-slate-700 mx-auto" />
         </div>
 
-        {/* BRANCH LEVEL: Categories */}
+        {/* BRANCH LEVEL: Category Allotments */}
         {categoriesPresent.length === 0 ? (
-          <div className="text-slate-500 text-xs py-6">No applications logged yet for this IPO.</div>
+          <div className="text-slate-500 text-xs py-6">No applications or allotments logged yet for this IPO.</div>
         ) : (
-          <div className="w-full flex justify-center gap-8 relative pt-2">
+          <div className="w-full flex justify-center gap-6 relative pt-2">
             {categoriesPresent.map((catKey) => {
               const catItems = grouped[catKey];
-              const catTotal = catItems.reduce((sum, i) => sum + i.investedAmount, 0);
+              const catTotal = catItems.reduce((sum, i) => sum + i.amount, 0);
               const totalLots = catItems.reduce((sum, i) => sum + (i.lotsApplied || 1), 0);
               const conf = categoryConfig[catKey] || categoryConfig.RETAIL;
 
@@ -123,36 +139,36 @@ export default function IPOMindMap({ ipoName, totalInvested, investments }: IPOM
 
                   {/* LEAF NODES: Persons/Applicants */}
                   <div className="w-full space-y-2.5">
-                    {catItems.map((inv) => (
+                    {catItems.map((app) => (
                       <div
-                        key={inv.id}
+                        key={app.id}
                         className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.08] hover:border-white/[0.2] transition-all text-xs"
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className="font-semibold text-white truncate max-w-[140px]">
-                            {inv.userDisplayName}
+                            {app.userDisplayName}
                           </span>
                           <span
                             className={`text-[9px] font-bold uppercase px-2 py-0.5 rounded-full border ${
-                              inv.allotmentStatus === 'ALLOTTED'
+                              app.allotmentStatus === 'ALLOTTED'
                                 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                                : inv.allotmentStatus === 'NOT_ALLOTTED'
+                                : app.allotmentStatus === 'NOT_ALLOTTED'
                                 ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
                                 : 'bg-blue-500/10 text-blue-400 border-blue-500/30'
                             }`}
                           >
-                            {inv.allotmentStatus || 'APPLIED'}
+                            {app.allotmentStatus || 'APPLIED'}
                           </span>
                         </div>
 
-                        <div className="text-[10px] text-slate-400 truncate mt-0.5">{inv.userEmail}</div>
+                        <div className="text-[10px] text-slate-400 truncate mt-0.5">{app.userEmail}</div>
 
                         <div className="flex items-center justify-between mt-2 pt-2 border-t border-white/[0.05] text-[11px]">
                           <span className="text-slate-400">
-                            {inv.lotsApplied || 1} Lot(s)
+                            {app.lotsApplied || 1} Lot(s)
                           </span>
                           <span className="font-bold text-emerald-400">
-                            {formatCurrency(inv.investedAmount)}
+                            {formatCurrency(app.amount)}
                           </span>
                         </div>
                       </div>
