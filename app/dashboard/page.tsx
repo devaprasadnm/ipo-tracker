@@ -1,11 +1,12 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
-import { useUserInvestments, useIPOs } from '@/lib/firestore';
+import { useUserInvestments, useIPOs, useIPOInvestments } from '@/lib/firestore';
 import { formatCurrency } from '@/lib/helpers';
 import StatCard from '@/components/StatCard';
+import Modal from '@/components/Modal';
 import LoadingSpinner from '@/components/LoadingSpinner';
 
 const InvestedIcon = () => (
@@ -28,6 +29,93 @@ const DealIcon = () => (
   </svg>
 );
 
+// ─── Sub-component: Read-Only Co-Investors Modal Content ────────────────────────
+
+function CoInvestorsModalContent({
+  ipoId,
+  ipoName,
+  totalInvestedInIPO,
+  status,
+}: {
+  ipoId: string;
+  ipoName: string;
+  totalInvestedInIPO: number;
+  status: string;
+}) {
+  const { investments: allIPOInvestments, loading } = useIPOInvestments(ipoId);
+
+  if (loading) {
+    return (
+      <div className="py-8 text-center text-slate-400 text-sm">
+        Loading co-investors data...
+      </div>
+    );
+  }
+
+  const calculatedTotal = allIPOInvestments.reduce((sum, inv) => sum + inv.investedAmount, 0);
+  const totalCapital = totalInvestedInIPO > 0 ? totalInvestedInIPO : calculatedTotal;
+
+  return (
+    <div className="space-y-4">
+      {/* IPO Summary */}
+      <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06] flex items-center justify-between text-xs">
+        <div>
+          <p className="text-slate-400">Total Capital Raised</p>
+          <p className="text-lg font-bold text-emerald-400 mt-0.5">{formatCurrency(totalCapital)}</p>
+        </div>
+        <div className="text-right">
+          <p className="text-slate-400">Total Shareholders</p>
+          <p className="text-lg font-bold text-white mt-0.5">{allIPOInvestments.length}</p>
+        </div>
+      </div>
+
+      {/* Shareholders List */}
+      <div className="max-h-[50vh] overflow-y-auto overflow-x-auto rounded-xl border border-white/[0.06]">
+        {allIPOInvestments.length === 0 ? (
+          <div className="p-6 text-center text-slate-500 text-xs">
+            No shareholders recorded for this deal.
+          </div>
+        ) : (
+          <table className="data-table text-xs">
+            <thead>
+              <tr>
+                <th>Shareholder</th>
+                <th>Email</th>
+                <th>Invested Amount</th>
+                <th>Share %</th>
+                {status === 'SOLD' && <th>Realized Profit</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {allIPOInvestments.map((inv) => {
+                const sharePct = totalCapital > 0 ? (inv.investedAmount / totalCapital) * 100 : 0;
+
+                return (
+                  <tr key={inv.id}>
+                    <td className="text-white font-medium">{inv.userDisplayName}</td>
+                    <td className="text-slate-400 text-[11px]">{inv.userEmail}</td>
+                    <td className="text-emerald-400 font-semibold">{formatCurrency(inv.investedAmount)}</td>
+                    <td>
+                      <span className="font-semibold text-slate-300">{sharePct.toFixed(1)}%</span>
+                    </td>
+                    {status === 'SOLD' && (
+                      <td className={`font-semibold ${inv.profitEarned >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                        {inv.profitEarned >= 0 ? '+' : ''}{formatCurrency(inv.profitEarned)}
+                      </td>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Main User Dashboard Component ──────────────────────────────────────────────
+
 export default function DashboardPage() {
   const { user, userData, loading: authLoading } = useAuth();
   const router = useRouter();
@@ -37,6 +125,14 @@ export default function DashboardPage() {
     userData?.displayName || user?.displayName || undefined
   );
   const { ipos, loading: iposLoading } = useIPOs();
+
+  // State for viewing co-investors modal
+  const [selectedIPOForModal, setSelectedIPOForModal] = useState<{
+    ipoId: string;
+    ipoName: string;
+    totalInvested: number;
+    status: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!authLoading && !user) router.push('/login');
@@ -125,9 +221,11 @@ export default function DashboardPage() {
 
       {/* Participated IPOs Table */}
       <div className="glass-card-static overflow-hidden animate-fadeIn stagger-4 opacity-0">
-        <div className="p-6 border-b border-white/[0.06]">
-          <h2 className="text-lg font-semibold text-white">Your IPO Participations</h2>
-          <p className="text-xs text-slate-500 mt-1">List of deals you have capital allocated to</p>
+        <div className="p-6 border-b border-white/[0.06] flex items-center justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-white">Your IPO Participations</h2>
+            <p className="text-xs text-slate-500 mt-1">Deals you have capital allocated to</p>
+          </div>
         </div>
         <div className="overflow-x-auto">
           {userDeals.length === 0 ? (
@@ -143,8 +241,9 @@ export default function DashboardPage() {
                   <th>IPO Name</th>
                   <th>Status</th>
                   <th>Your Contribution</th>
-                  <th>Pool Participation Share</th>
+                  <th>Pool Share</th>
                   <th>Realized Payout / Profit</th>
+                  <th>Co-Investors</th>
                 </tr>
               </thead>
               <tbody>
@@ -178,6 +277,22 @@ export default function DashboardPage() {
                           <span className="text-slate-500 text-xs">Pending Sale</span>
                         )}
                       </td>
+                      <td>
+                        <button
+                          onClick={() =>
+                            setSelectedIPOForModal({
+                              ipoId: deal.ipoId,
+                              ipoName: deal.ipoName,
+                              totalInvested: deal.totalInvestedInIPO,
+                              status: deal.status,
+                            })
+                          }
+                          className="btn-secondary text-xs px-3 py-1.5 inline-flex items-center gap-1.5 hover:bg-white/10 transition-colors"
+                          id={`view-coinvestors-${deal.ipoId}`}
+                        >
+                          👥 View Shareholders
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}
@@ -186,6 +301,22 @@ export default function DashboardPage() {
           )}
         </div>
       </div>
+
+      {/* Modal: View Co-Investors (Read-Only) */}
+      <Modal
+        isOpen={selectedIPOForModal !== null}
+        onClose={() => setSelectedIPOForModal(null)}
+        title={`Shareholders — ${selectedIPOForModal?.ipoName || ''}`}
+      >
+        {selectedIPOForModal && (
+          <CoInvestorsModalContent
+            ipoId={selectedIPOForModal.ipoId}
+            ipoName={selectedIPOForModal.ipoName}
+            totalInvestedInIPO={selectedIPOForModal.totalInvested}
+            status={selectedIPOForModal.status}
+          />
+        )}
+      </Modal>
     </div>
   );
 }
