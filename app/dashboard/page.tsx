@@ -33,7 +33,8 @@ export default function DashboardPage() {
   const router = useRouter();
   const { investments, loading: investmentsLoading } = useUserInvestments(
     user?.uid,
-    user?.email || userData?.email
+    user?.email || userData?.email,
+    userData?.displayName || user?.displayName || undefined
   );
   const { ipos, loading: iposLoading } = useIPOs();
 

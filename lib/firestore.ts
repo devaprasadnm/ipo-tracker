@@ -127,32 +127,60 @@ export function useIPOInvestments(ipoId: string) {
 }
 
 /**
- * Subscribe to all investments for a specific user (by UID or Email for user dashboard).
+ * Subscribe to all investments for a specific user (by UID, Email, or Display Name for user dashboard).
  */
-export function useUserInvestments(uid: string | undefined, userEmail?: string | undefined) {
+export function useUserInvestments(
+  uid: string | undefined,
+  userEmail?: string | undefined,
+  displayName?: string | undefined
+) {
   const [investments, setInvestments] = useState<IPOInvestment[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (typeof window === 'undefined' || (!uid && !userEmail)) {
+    if (typeof window === 'undefined' || (!uid && !userEmail && !displayName)) {
       setLoading(false);
       return;
     }
     const db = getDbInstance();
 
-    const unsubscribe = onSnapshot(collection(db, 'ipo_investments'), (snap) => {
-      const all = snap.docs.map((d) => ({ id: d.id, ...d.data() } as IPOInvestment));
-      const filtered = all.filter(
-        (inv) =>
-          (uid && inv.uid === uid) ||
-          (userEmail && inv.userEmail?.toLowerCase() === userEmail.toLowerCase())
-      );
-      setInvestments(filtered);
-      setLoading(false);
-    });
+    const unsubscribe = onSnapshot(
+      collection(db, 'ipo_investments'),
+      (snap) => {
+        const all = snap.docs.map((d) => ({ id: d.id, ...d.data() } as IPOInvestment));
+        const cleanUid = (uid || '').trim();
+        const cleanEmail = (userEmail || '').trim().toLowerCase();
+        const cleanName = (displayName || '').trim().toLowerCase();
+
+        const filtered = all.filter((inv) => {
+          const invUid = (inv.uid || '').trim();
+          const invEmail = (inv.userEmail || '').trim().toLowerCase();
+          const invName = (inv.userDisplayName || '').trim().toLowerCase();
+
+          return (
+            (cleanUid && invUid === cleanUid) ||
+            (cleanEmail && invEmail === cleanEmail) ||
+            (cleanName && invName && invName === cleanName)
+          );
+        });
+
+        console.log('[useUserInvestments Debug]', {
+          searchCriteria: { cleanUid, cleanEmail, cleanName },
+          totalDocsInCollection: all.length,
+          matchedDocs: filtered,
+        });
+
+        setInvestments(filtered);
+        setLoading(false);
+      },
+      (err) => {
+        console.error('[useUserInvestments Error]', err);
+        setLoading(false);
+      }
+    );
 
     return () => unsubscribe();
-  }, [uid, userEmail]);
+  }, [uid, userEmail, displayName]);
 
   return { investments, loading };
 }
