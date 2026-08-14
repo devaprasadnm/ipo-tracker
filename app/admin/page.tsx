@@ -36,6 +36,37 @@ export default function AdminPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [fetchingModalIPOs, setFetchingModalIPOs] = useState(false);
+  const [modalLiveIPOs, setModalLiveIPOs] = useState<ScrapedIPO[]>([]);
+
+  const handleFetchInsideCreateModal = async () => {
+    setFetchingModalIPOs(true);
+    setError('');
+    try {
+      const res = await fetch('/api/fetch-ipos');
+      const data = await res.json();
+      if (data.success && data.ipos && data.ipos.length > 0) {
+        setModalLiveIPOs(data.ipos);
+      } else {
+        setError('No live IPO data returned.');
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch live IPOs');
+    } finally {
+      setFetchingModalIPOs(false);
+    }
+  };
+
+  const handleSelectLiveIPO = (indexStr: string) => {
+    if (!indexStr) return;
+    const idx = parseInt(indexStr, 10);
+    const selected = modalLiveIPOs[idx];
+    if (selected) {
+      setName(selected.name);
+      setIssuePrice(String(selected.issuePrice || '100'));
+      setSharesPerLot(String(selected.lotSize || '15'));
+    }
+  };
 
   // Fetch Live IPOs Modal
   const [showFetchModal, setShowFetchModal] = useState(false);
@@ -360,6 +391,42 @@ export default function AdminPage() {
       {/* ═══════ Create IPO Modal ═══════ */}
       <Modal isOpen={showCreateModal} onClose={() => setShowCreateModal(false)} title="Create New IPO Entry">
         <form onSubmit={handleCreateIPO} className="space-y-4">
+          {/* Live IPO Autofill Banner */}
+          <div className="p-3.5 rounded-xl bg-blue-500/10 border border-blue-500/20 text-xs space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <div>
+                <span className="font-bold text-blue-400">⚡ Fetch Live IPO Data</span>
+                <p className="text-[11px] text-slate-400">Autofill fields from active Indian IPOs via RapidAPI</p>
+              </div>
+              <button
+                type="button"
+                onClick={handleFetchInsideCreateModal}
+                disabled={fetchingModalIPOs}
+                className="btn-blue text-xs px-3 py-1.5 whitespace-nowrap flex items-center gap-1.5"
+                id="modal-fetch-live-btn"
+              >
+                {fetchingModalIPOs ? 'Fetching...' : '🔄 Fetch Live List'}
+              </button>
+            </div>
+
+            {modalLiveIPOs.length > 0 && (
+              <div className="pt-1">
+                <select
+                  onChange={(e) => handleSelectLiveIPO(e.target.value)}
+                  className="input-field py-1.5 text-xs bg-slate-900 border-blue-500/30 text-white"
+                  defaultValue=""
+                >
+                  <option value="" disabled>-- Select a Live IPO to Autofill Form --</option>
+                  {modalLiveIPOs.map((l, i) => (
+                    <option key={i} value={i}>
+                      {l.name} — Price: ₹{l.issuePrice} | Lot: {l.lotSize}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
           <div>
             <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1">
               IPO Name
