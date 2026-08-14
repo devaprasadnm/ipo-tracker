@@ -127,24 +127,32 @@ export function useIPOInvestments(ipoId: string) {
 }
 
 /**
- * Subscribe to all investments for a specific user (for user dashboard).
+ * Subscribe to all investments for a specific user (by UID or Email for user dashboard).
  */
-export function useUserInvestments(uid: string | undefined) {
+export function useUserInvestments(uid: string | undefined, userEmail?: string | undefined) {
   const [investments, setInvestments] = useState<IPOInvestment[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (typeof window === 'undefined' || !uid) { setLoading(false); return; }
+    if (typeof window === 'undefined' || (!uid && !userEmail)) {
+      setLoading(false);
+      return;
+    }
     const db = getDbInstance();
-    const q = query(collection(db, 'ipo_investments'), where('uid', '==', uid));
 
-    const unsubscribe = onSnapshot(q, (snap) => {
-      setInvestments(snap.docs.map((d) => ({ id: d.id, ...d.data() } as IPOInvestment)));
+    const unsubscribe = onSnapshot(collection(db, 'ipo_investments'), (snap) => {
+      const all = snap.docs.map((d) => ({ id: d.id, ...d.data() } as IPOInvestment));
+      const filtered = all.filter(
+        (inv) =>
+          (uid && inv.uid === uid) ||
+          (userEmail && inv.userEmail?.toLowerCase() === userEmail.toLowerCase())
+      );
+      setInvestments(filtered);
       setLoading(false);
     });
 
     return () => unsubscribe();
-  }, [uid]);
+  }, [uid, userEmail]);
 
   return { investments, loading };
 }

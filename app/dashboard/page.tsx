@@ -31,7 +31,10 @@ const DealIcon = () => (
 export default function DashboardPage() {
   const { user, userData, loading: authLoading } = useAuth();
   const router = useRouter();
-  const { investments, loading: investmentsLoading } = useUserInvestments(user?.uid);
+  const { investments, loading: investmentsLoading } = useUserInvestments(
+    user?.uid,
+    user?.email || userData?.email
+  );
   const { ipos, loading: iposLoading } = useIPOs();
 
   useEffect(() => {
