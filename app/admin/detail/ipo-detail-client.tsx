@@ -10,6 +10,7 @@ import {
   useAllUsers,
   addInvestment,
   removeInvestment,
+  updateInvestmentAmount,
   resolveIPO,
   updateIPOStatus,
   IPO,
@@ -55,10 +56,17 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
 
   const [showAddModal, setShowAddModal] = useState(false);
   const [showResolveModal, setShowResolveModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
 
   const [selectedUid, setSelectedUid] = useState('');
   const [investedAmount, setInvestedAmount] = useState('');
   const [netProfitInput, setNetProfitInput] = useState('');
+
+  // Edit investment state
+  const [editInvestmentId, setEditInvestmentId] = useState('');
+  const [editOldAmount, setEditOldAmount] = useState(0);
+  const [editNewAmount, setEditNewAmount] = useState('');
+  const [editUserName, setEditUserName] = useState('');
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
@@ -72,8 +80,9 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
   if (authLoading || ipoLoading || investmentsLoading || usersLoading) return <LoadingSpinner />;
   if (!user || !userData || !userData.isAdmin || !ipo) return null;
 
-  // Running total of collected capital
   const runningTotal = investments.reduce((sum, inv) => sum + inv.investedAmount, 0);
+
+  // ─── Add Investor ─────────────────────────────────────────────────
 
   const handleAddInvestor = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -98,13 +107,7 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
 
     setSubmitting(true);
     try {
-      await addInvestment(
-        ipoId,
-        targetUser.uid,
-        targetUser.email,
-        targetUser.displayName,
-        amt
-      );
+      await addInvestment(ipoId, targetUser.uid, targetUser.email, targetUser.displayName, amt);
       setSuccess(`Allocated ${formatCurrency(amt)} to ${targetUser.email}`);
       setShowAddModal(false);
       setSelectedUid('');
@@ -117,6 +120,8 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
     }
   };
 
+  // ─── Remove Investor ──────────────────────────────────────────────
+
   const handleRemoveInvestor = async (investmentId: string, userEmail: string, amt: number) => {
     if (!confirm(`Remove ${userEmail}'s investment of ${formatCurrency(amt)}?`)) return;
     try {
@@ -128,6 +133,47 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
     }
   };
 
+  // ─── Edit Investment Amount ───────────────────────────────────────
+
+  const openEditModal = (investmentId: string, currentAmount: number, userName: string) => {
+    setEditInvestmentId(investmentId);
+    setEditOldAmount(currentAmount);
+    setEditNewAmount(String(currentAmount));
+    setEditUserName(userName);
+    setShowEditModal(true);
+    setError('');
+  };
+
+  const handleEditInvestment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+
+    const newAmt = parseFloat(editNewAmount);
+    if (isNaN(newAmt) || newAmt <= 0) {
+      setError('Please enter a valid amount.');
+      return;
+    }
+
+    if (newAmt === editOldAmount) {
+      setShowEditModal(false);
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await updateInvestmentAmount(editInvestmentId, ipoId, editOldAmount, newAmt);
+      setSuccess(`Updated ${editUserName}'s contribution from ${formatCurrency(editOldAmount)} to ${formatCurrency(newAmt)}`);
+      setShowEditModal(false);
+      setTimeout(() => setSuccess(''), 5000);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : 'Failed to update investment');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // ─── Status Change ────────────────────────────────────────────────
+
   const handleStatusChange = async (newStatus: IPO['status']) => {
     try {
       await updateIPOStatus(ipoId, newStatus);
@@ -137,6 +183,8 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
       setError(err instanceof Error ? err.message : 'Failed to update status');
     }
   };
+
+  // ─── Resolve IPO ──────────────────────────────────────────────────
 
   const handleResolveIPO = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -166,6 +214,8 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
       setSubmitting(false);
     }
   };
+
+  // ─── Status Badge ─────────────────────────────────────────────────
 
   const getStatusBadge = (status: string) => {
     switch (status) {
@@ -204,7 +254,6 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
           </div>
 
           <div className="flex flex-wrap gap-2">
-            {/* Status Change Dropdown */}
             {ipo.status !== 'SOLD' && (
               <select
                 value={ipo.status}
@@ -218,7 +267,6 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
               </select>
             )}
 
-            {/* Resolve Modal Trigger */}
             {ipo.status !== 'SOLD' && (
               <button
                 onClick={() => {
@@ -244,31 +292,15 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
       {/* Stats Summary */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
         <div className="animate-fadeIn stagger-1 opacity-0">
-          <StatCard
-            label="Total Funds Collected"
-            value={formatCurrency(runningTotal)}
-            icon={<MoneyIcon />}
-            glowColor="emerald"
-            subtext="Sum of all allocated user capital"
-          />
+          <StatCard label="Total Funds Collected" value={formatCurrency(runningTotal)} icon={<MoneyIcon />} glowColor="emerald" subtext="Sum of all allocated user capital" />
         </div>
         <div className="animate-fadeIn stagger-2 opacity-0">
-          <StatCard
-            label="Total Investors"
-            value={`${investments.length}`}
-            icon={<UsersIcon />}
-            glowColor="blue"
-            subtext="Participating members in this deal"
-          />
+          <StatCard label="Total Investors" value={`${investments.length}`} icon={<UsersIcon />} glowColor="blue" subtext="Participating members in this deal" />
         </div>
         <div className="animate-fadeIn stagger-3 opacity-0">
           <StatCard
             label="Net Deal Profit"
-            value={
-              ipo.status === 'SOLD'
-                ? `${ipo.netProfit >= 0 ? '+' : ''}${formatCurrency(ipo.netProfit)}`
-                : 'Pending Sale'
-            }
+            value={ipo.status === 'SOLD' ? `${ipo.netProfit >= 0 ? '+' : ''}${formatCurrency(ipo.netProfit)}` : 'Pending Sale'}
             icon={<TrophyIcon />}
             glowColor={ipo.status === 'SOLD' && ipo.netProfit >= 0 ? 'emerald' : 'rose'}
             subtext={ipo.status === 'SOLD' ? 'Proportionally distributed' : 'Awaiting resolution'}
@@ -276,7 +308,7 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
         </div>
       </div>
 
-      {/* Capital Allocation Section */}
+      {/* Investor Allocations Table */}
       <div className="glass-card-static overflow-hidden mb-8 animate-fadeIn stagger-4 opacity-0">
         <div className="p-6 border-b border-white/[0.06] flex items-center justify-between">
           <div>
@@ -285,10 +317,7 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
           </div>
           {ipo.status !== 'SOLD' && (
             <button
-              onClick={() => {
-                setShowAddModal(true);
-                setError('');
-              }}
+              onClick={() => { setShowAddModal(true); setError(''); }}
               className="btn-primary text-xs px-4 py-2"
               id="add-investor-btn"
             >
@@ -313,7 +342,7 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
                   <th>Invested Amount</th>
                   <th>Contribution Share</th>
                   {ipo.status === 'SOLD' && <th>Profit Earned</th>}
-                  {ipo.status !== 'SOLD' && <th>Action</th>}
+                  {ipo.status !== 'SOLD' && <th>Actions</th>}
                 </tr>
               </thead>
               <tbody>
@@ -327,28 +356,33 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
                       <td>
                         <div className="flex items-center gap-2">
                           <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden max-w-[80px]">
-                            <div
-                              className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full"
-                              style={{ width: `${Math.min(sharePct, 100)}%` }}
-                            />
+                            <div className="h-full bg-gradient-to-r from-emerald-500 to-emerald-400 rounded-full" style={{ width: `${Math.min(sharePct, 100)}%` }} />
                           </div>
                           <span className="text-xs text-slate-400">{sharePct.toFixed(1)}%</span>
                         </div>
                       </td>
                       {ipo.status === 'SOLD' && (
                         <td className={`font-semibold ${inv.profitEarned >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          {inv.profitEarned >= 0 ? '+' : ''}
-                          {formatCurrency(inv.profitEarned)}
+                          {inv.profitEarned >= 0 ? '+' : ''}{formatCurrency(inv.profitEarned)}
                         </td>
                       )}
                       {ipo.status !== 'SOLD' && (
                         <td>
-                          <button
-                            onClick={() => handleRemoveInvestor(inv.id, inv.userEmail, inv.investedAmount)}
-                            className="text-xs px-2.5 py-1 rounded bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors"
-                          >
-                            Remove
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => openEditModal(inv.id, inv.investedAmount, inv.userDisplayName)}
+                              className="text-xs px-2.5 py-1 rounded bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 transition-colors"
+                              title="Edit contribution amount"
+                            >
+                              ✏️ Edit
+                            </button>
+                            <button
+                              onClick={() => handleRemoveInvestor(inv.id, inv.userEmail, inv.investedAmount)}
+                              className="text-xs px-2.5 py-1 rounded bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors"
+                            >
+                              Remove
+                            </button>
+                          </div>
                         </td>
                       )}
                     </tr>
@@ -360,68 +394,61 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
         </div>
       </div>
 
-      {/* Modal: Add Investor */}
+      {/* ═══════ Add Investor Modal ═══════ */}
       <Modal isOpen={showAddModal} onClose={() => setShowAddModal(false)} title={`Add Investor to ${ipo.name}`}>
         <form onSubmit={handleAddInvestor} className="space-y-4">
           <div>
-            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
-              Select User (by Email)
-            </label>
-            <select
-              value={selectedUid}
-              onChange={(e) => setSelectedUid(e.target.value)}
-              className="input-field bg-white/[0.05]"
-              id="select-user-dropdown"
-              required
-            >
+            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Select User (by Email)</label>
+            <select value={selectedUid} onChange={(e) => setSelectedUid(e.target.value)} className="input-field bg-white/[0.05]" id="select-user-dropdown" required>
               <option value="" className="bg-slate-900 text-slate-400 py-2">-- Choose User --</option>
               {users.map((u) => (
-                <option key={u.uid} value={u.uid} className="bg-slate-900 text-white py-2">
-                  {u.displayName} ({u.email})
-                </option>
+                <option key={u.uid} value={u.uid} className="bg-slate-900 text-white py-2">{u.displayName} ({u.email})</option>
               ))}
             </select>
           </div>
-
           <div>
-            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
-              Invested Amount (₹)
-            </label>
-            <input
-              type="number"
-              className="input-field"
-              placeholder="e.g. 50000"
-              value={investedAmount}
-              onChange={(e) => setInvestedAmount(e.target.value)}
-              id="invested-amount-input"
-              min="1"
-              required
-            />
+            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Invested Amount (₹)</label>
+            <input type="number" className="input-field" placeholder="e.g. 50000" value={investedAmount} onChange={(e) => setInvestedAmount(e.target.value)} id="invested-amount-input" min="1" required />
           </div>
-
           {error && <p className="text-rose-400 text-xs">⚠️ {error}</p>}
-
           <div className="flex gap-3 pt-3">
-            <button
-              type="submit"
-              disabled={submitting}
-              className="btn-primary flex-1 py-2.5"
-              id="save-investor-btn"
-            >
-              {submitting ? 'Allocating...' : 'Confirm Allocation'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowAddModal(false)}
-              className="btn-secondary py-2.5"
-            >
-              Cancel
-            </button>
+            <button type="submit" disabled={submitting} className="btn-primary flex-1 py-2.5" id="save-investor-btn">{submitting ? 'Allocating...' : 'Confirm Allocation'}</button>
+            <button type="button" onClick={() => setShowAddModal(false)} className="btn-secondary py-2.5">Cancel</button>
           </div>
         </form>
       </Modal>
 
-      {/* Modal: Resolve IPO */}
+      {/* ═══════ Edit Investment Amount Modal ═══════ */}
+      <Modal isOpen={showEditModal} onClose={() => setShowEditModal(false)} title={`Edit Contribution — ${editUserName}`}>
+        <form onSubmit={handleEditInvestment} className="space-y-4">
+          <div className="p-3 rounded-lg bg-white/[0.02] border border-white/[0.06] text-xs">
+            <div className="flex justify-between">
+              <span className="text-slate-400">Current Amount</span>
+              <span className="text-white font-semibold">{formatCurrency(editOldAmount)}</span>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">New Amount (₹)</label>
+            <input
+              type="number"
+              className="input-field"
+              placeholder="Enter new amount"
+              value={editNewAmount}
+              onChange={(e) => setEditNewAmount(e.target.value)}
+              id="edit-amount-input"
+              min="1"
+              required
+            />
+          </div>
+          {error && <p className="text-rose-400 text-xs">⚠️ {error}</p>}
+          <div className="flex gap-3 pt-3">
+            <button type="submit" disabled={submitting} className="btn-blue flex-1 py-2.5" id="save-edit-btn">{submitting ? 'Updating...' : 'Update Amount'}</button>
+            <button type="button" onClick={() => setShowEditModal(false)} className="btn-secondary py-2.5">Cancel</button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* ═══════ Resolve IPO Modal ═══════ */}
       <Modal isOpen={showResolveModal} onClose={() => setShowResolveModal(false)} title={`Resolve IPO: ${ipo.name}`}>
         <form onSubmit={handleResolveIPO} className="space-y-4">
           <div className="p-4 rounded-xl bg-white/[0.02] border border-white/[0.06] text-xs space-y-2">
@@ -434,44 +461,15 @@ export function IPODetailClient({ ipoId }: { ipoId: string }) {
               <span className="text-white font-semibold">{investments.length}</span>
             </div>
           </div>
-
           <div>
-            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">
-              Total Net Profit / Loss (₹)
-            </label>
-            <input
-              type="number"
-              step="0.01"
-              className="input-field"
-              placeholder="e.g. 25000 or -5000"
-              value={netProfitInput}
-              onChange={(e) => setNetProfitInput(e.target.value)}
-              id="net-profit-input"
-              required
-            />
-            <p className="text-[11px] text-slate-500 mt-1">
-              Enter positive value for profit, negative for loss. This will automatically update `profitEarned` for all investors based on their contribution share.
-            </p>
+            <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-2">Total Net Profit / Loss (₹)</label>
+            <input type="number" step="0.01" className="input-field" placeholder="e.g. 25000 or -5000" value={netProfitInput} onChange={(e) => setNetProfitInput(e.target.value)} id="net-profit-input" required />
+            <p className="text-[11px] text-slate-500 mt-1">Enter positive value for profit, negative for loss.</p>
           </div>
-
           {error && <p className="text-rose-400 text-xs">⚠️ {error}</p>}
-
           <div className="flex gap-3 pt-3">
-            <button
-              type="submit"
-              disabled={submitting}
-              className="btn-amber flex-1 py-2.5"
-              id="confirm-resolve-btn"
-            >
-              {submitting ? 'Resolving...' : 'Confirm Resolution'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setShowResolveModal(false)}
-              className="btn-secondary py-2.5"
-            >
-              Cancel
-            </button>
+            <button type="submit" disabled={submitting} className="btn-amber flex-1 py-2.5" id="confirm-resolve-btn">{submitting ? 'Resolving...' : 'Confirm Resolution'}</button>
+            <button type="button" onClick={() => setShowResolveModal(false)} className="btn-secondary py-2.5">Cancel</button>
           </div>
         </form>
       </Modal>

@@ -254,6 +254,57 @@ export async function removeInvestment(investmentId: string, ipoId: string, inve
 }
 
 /**
+ * Edit an existing investment amount and update totalInvested on the IPO.
+ */
+export async function updateInvestmentAmount(
+  investmentId: string,
+  ipoId: string,
+  oldAmount: number,
+  newAmount: number
+) {
+  const db = getDbInstance();
+  const batch = writeBatch(db);
+
+  const diff = newAmount - oldAmount;
+
+  // Update investment doc
+  batch.update(doc(db, 'ipo_investments', investmentId), {
+    investedAmount: newAmount,
+  });
+
+  // Adjust totalInvested on the IPO by diff
+  batch.update(doc(db, 'ipos', ipoId), {
+    totalInvested: increment(diff),
+  });
+
+  await batch.commit();
+}
+
+/**
+ * Delete an IPO and all its associated ipo_investments. Admin only.
+ */
+export async function deleteIPO(ipoId: string) {
+  const db = getDbInstance();
+
+  // Get all associated investments
+  const investmentsSnap = await getDocs(
+    query(collection(db, 'ipo_investments'), where('ipoId', '==', ipoId))
+  );
+
+  const batch = writeBatch(db);
+
+  // Delete all investment docs
+  investmentsSnap.docs.forEach((d) => {
+    batch.delete(d.ref);
+  });
+
+  // Delete the IPO doc
+  batch.delete(doc(db, 'ipos', ipoId));
+
+  await batch.commit();
+}
+
+/**
  * Resolve an IPO as SOLD.
  * 
  * CORE BUSINESS LOGIC:
