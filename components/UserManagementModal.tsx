@@ -8,6 +8,7 @@ import {
   rejectUserAccess,
   revokeUserAccess,
   toggleAdminRole,
+  deleteUserAccount,
   UserInfo,
 } from '@/lib/firestore';
 import { useAuth } from '@/lib/auth-context';
@@ -87,6 +88,22 @@ export default function UserManagementModal({ isOpen, onClose }: UserManagementM
     }
   };
 
+  const handleDeleteUser = async (user: UserInfo) => {
+    if (user.uid === userData.uid) {
+      alert('You cannot delete your own account.');
+      return;
+    }
+    if (!confirm(`⚠️ PERMANENT DELETE: Are you sure you want to completely remove user "${user.displayName}" (${user.email})?`)) return;
+    setProcessingUid(user.uid);
+    try {
+      await deleteUserAccount(user.uid, user.email, user.displayName, adminInfo);
+    } catch (err) {
+      console.error('Delete user failed:', err);
+    } finally {
+      setProcessingUid(null);
+    }
+  };
+
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="👥 User Access & Request Portal">
       <div className="space-y-4">
@@ -147,7 +164,7 @@ export default function UserManagementModal({ isOpen, onClose }: UserManagementM
                       <div className="text-[11px] text-slate-400 truncate mt-0.5">{u.email}</div>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
                       <button
                         onClick={() => handleApprove(u)}
                         disabled={processingUid === u.uid}
@@ -159,11 +176,20 @@ export default function UserManagementModal({ isOpen, onClose }: UserManagementM
                       <button
                         onClick={() => handleReject(u)}
                         disabled={processingUid === u.uid}
-                        className="text-xs px-2.5 py-1.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors border border-rose-500/20"
+                        className="text-xs px-2.5 py-1.5 rounded-lg bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors border border-amber-500/20"
                         id={`reject-user-${u.uid}`}
                         title="Reject request"
                       >
-                        ❌ Deny
+                        Deny
+                      </button>
+                      <button
+                        onClick={() => handleDeleteUser(u)}
+                        disabled={processingUid === u.uid}
+                        className="text-xs px-2 py-1.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors border border-rose-500/20"
+                        id={`delete-user-${u.uid}`}
+                        title="Permanently remove user"
+                      >
+                        🗑
                       </button>
                     </div>
                   </div>
@@ -195,22 +221,30 @@ export default function UserManagementModal({ isOpen, onClose }: UserManagementM
                       <div className="text-[11px] text-slate-400 truncate mt-0.5">{u.email}</div>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
                       <button
                         onClick={() => handleToggleAdmin(u)}
                         disabled={processingUid === u.uid || u.uid === userData.uid}
                         className="text-xs px-2.5 py-1.5 rounded-lg bg-purple-500/10 text-purple-300 hover:bg-purple-500/20 transition-colors border border-purple-500/20"
                         title={u.isAdmin ? 'Remove Admin rights' : 'Promote to Admin'}
                       >
-                        {u.isAdmin ? 'Remove Admin' : '⭐ Make Admin'}
+                        {u.isAdmin ? 'Remove Admin' : '⭐ Admin'}
                       </button>
                       <button
                         onClick={() => handleRevoke(u)}
                         disabled={processingUid === u.uid || u.uid === userData.uid}
                         className="text-xs px-2.5 py-1.5 rounded-lg bg-amber-500/10 text-amber-400 hover:bg-amber-500/20 transition-colors border border-amber-500/20"
-                        title="Revoke access"
+                        title="Revoke access back to pending"
                       >
                         🚫 Revoke
+                      </button>
+                      <button
+                        onClick={() => handleDeleteUser(u)}
+                        disabled={processingUid === u.uid || u.uid === userData.uid}
+                        className="text-xs px-2 py-1.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors border border-rose-500/20"
+                        title="Permanently delete user"
+                      >
+                        🗑
                       </button>
                     </div>
                   </div>

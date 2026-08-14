@@ -657,3 +657,26 @@ export async function toggleAdminRole(
     );
   }
 }
+
+/**
+ * Permanently delete a user account document from Firestore.
+ */
+export async function deleteUserAccount(
+  targetUid: string,
+  targetEmail: string,
+  targetName: string,
+  adminInfo?: { email: string; name: string }
+) {
+  const db = getDbInstance();
+  await deleteDoc(doc(db, 'users', targetUid));
+
+  if (adminInfo) {
+    await logAdminAction(
+      adminInfo.email,
+      adminInfo.name,
+      'DELETE_IPO',
+      `Permanently deleted user account for ${targetName} (${targetEmail})`,
+      'User Management'
+    );
+  }
+}
