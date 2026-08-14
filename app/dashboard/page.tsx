@@ -10,6 +10,7 @@ import Modal from '@/components/Modal';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import IPOMindMap from '@/components/IPOMindMap';
 import ActivityLogModal from '@/components/ActivityLogModal';
+import PendingAccessScreen from '@/components/PendingAccessScreen';
 
 const InvestedIcon = () => (
   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -181,6 +182,11 @@ export default function DashboardPage() {
 
   if (authLoading || investmentsLoading || iposLoading) return <LoadingSpinner />;
   if (!user || !userData) return null;
+
+  // Access Approval Protection: Unapproved users see PendingAccessScreen
+  if (!userData.isAdmin && userData.status !== 'APPROVED') {
+    return <PendingAccessScreen />;
+  }
 
   const ipoMap = new Map(ipos.map((i) => [i.id, i]));
 

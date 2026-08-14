@@ -55,6 +55,8 @@ export interface UserInfo {
   email: string;
   displayName: string;
   isAdmin: boolean;
+  status?: 'PENDING' | 'APPROVED' | 'REJECTED';
+  requestedAt?: Timestamp;
 }
 
 export interface ActivityLog {
@@ -546,6 +548,112 @@ export async function resolveIPO(
       'RESOLVE_PROFIT',
       `Marked ${ipoName} as SOLD and distributed ₹${netProfit.toLocaleString('en-IN')} profit/loss across ${investmentsSnap.docs.length} investor(s)`,
       ipoName
+    );
+  }
+}
+
+// ─── User Access Management Functions ──────────────────────────────────────────
+
+/**
+ * Approve a pending user's access request.
+ */
+export async function approveUserAccess(
+  targetUid: string,
+  targetEmail: string,
+  targetName: string,
+  adminInfo?: { email: string; name: string }
+) {
+  const db = getDbInstance();
+  await updateDoc(doc(db, 'users', targetUid), {
+    status: 'APPROVED',
+  });
+
+  if (adminInfo) {
+    await logAdminAction(
+      adminInfo.email,
+      adminInfo.name,
+      'UPDATE_STATUS',
+      `Approved dashboard access for user ${targetName} (${targetEmail})`,
+      'User Management'
+    );
+  }
+}
+
+/**
+ * Reject a pending user's access request.
+ */
+export async function rejectUserAccess(
+  targetUid: string,
+  targetEmail: string,
+  targetName: string,
+  adminInfo?: { email: string; name: string }
+) {
+  const db = getDbInstance();
+  await updateDoc(doc(db, 'users', targetUid), {
+    status: 'REJECTED',
+  });
+
+  if (adminInfo) {
+    await logAdminAction(
+      adminInfo.email,
+      adminInfo.name,
+      'UPDATE_STATUS',
+      `Rejected access request for user ${targetName} (${targetEmail})`,
+      'User Management'
+    );
+  }
+}
+
+/**
+ * Revoke an active user's access (sets status back to PENDING).
+ */
+export async function revokeUserAccess(
+  targetUid: string,
+  targetEmail: string,
+  targetName: string,
+  adminInfo?: { email: string; name: string }
+) {
+  const db = getDbInstance();
+  await updateDoc(doc(db, 'users', targetUid), {
+    status: 'PENDING',
+  });
+
+  if (adminInfo) {
+    await logAdminAction(
+      adminInfo.email,
+      adminInfo.name,
+      'UPDATE_STATUS',
+      `Revoked dashboard access for ${targetName} (${targetEmail})`,
+      'User Management'
+    );
+  }
+}
+
+/**
+ * Toggle Admin role for a user.
+ */
+export async function toggleAdminRole(
+  targetUid: string,
+  targetEmail: string,
+  targetName: string,
+  currentIsAdmin: boolean,
+  adminInfo?: { email: string; name: string }
+) {
+  const db = getDbInstance();
+  const newAdminState = !currentIsAdmin;
+
+  await updateDoc(doc(db, 'users', targetUid), {
+    isAdmin: newAdminState,
+    status: 'APPROVED', // Admins are always approved
+  });
+
+  if (adminInfo) {
+    await logAdminAction(
+      adminInfo.email,
+      adminInfo.name,
+      'UPDATE_STATUS',
+      `${newAdminState ? 'Granted' : 'Revoked'} Admin privileges for ${targetName} (${targetEmail})`,
+      'User Management'
     );
   }
 }

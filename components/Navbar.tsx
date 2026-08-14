@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
+import { useAllUsers } from '@/lib/firestore';
 
 // SVG Icons
 const DashboardIcon = () => (
@@ -53,12 +54,14 @@ const navLinks = [
 
 export default function Navbar() {
   const { userData, signOut } = useAuth();
+  const { users } = useAllUsers();
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
 
   if (!userData) return null;
 
   const isAdmin = userData.isAdmin;
+  const pendingCount = users.filter((u) => u.status === 'PENDING').length;
 
   return (
     <>
@@ -87,14 +90,21 @@ export default function Navbar() {
                 key={link.href}
                 href={link.href}
                 id={`nav-${link.label.toLowerCase().replace(/\s/g, '-')}`}
-                className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 ${
+                className={`flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-all duration-200 ${
                   isActive
                     ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                     : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
                 }`}
               >
-                <span className={isActive ? 'text-emerald-400' : 'text-slate-500'}>{link.icon}</span>
-                {link.label}
+                <div className="flex items-center gap-3">
+                  <span className={isActive ? 'text-emerald-400' : 'text-slate-500'}>{link.icon}</span>
+                  {link.label}
+                </div>
+                {link.adminOnly && pendingCount > 0 && (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                    {pendingCount} new
+                  </span>
+                )}
               </Link>
             );
           })}
@@ -109,7 +119,7 @@ export default function Navbar() {
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-white truncate">{userData.displayName}</p>
               <p className="text-[10px] text-slate-500 truncate">
-                {isAdmin ? '⭐ Admin' : 'Member'}
+                {isAdmin ? '⭐ Admin' : userData.status === 'APPROVED' ? 'Approved Member' : 'Pending'}
               </p>
             </div>
           </div>
@@ -155,14 +165,21 @@ export default function Navbar() {
                     key={link.href}
                     href={link.href}
                     onClick={() => setMobileOpen(false)}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-all ${
+                    className={`flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium transition-all ${
                       isActive
                         ? 'bg-emerald-500/10 text-emerald-400'
                         : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
                     }`}
                   >
-                    {link.icon}
-                    {link.label}
+                    <div className="flex items-center gap-3">
+                      {link.icon}
+                      {link.label}
+                    </div>
+                    {link.adminOnly && pendingCount > 0 && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                        {pendingCount} new
+                      </span>
+                    )}
                   </Link>
                 );
               })}
@@ -174,7 +191,7 @@ export default function Navbar() {
                 </div>
                 <div className="min-w-0">
                   <p className="text-sm font-medium text-white truncate">{userData.displayName}</p>
-                  <p className="text-[10px] text-slate-500">{isAdmin ? '⭐ Admin' : 'Member'}</p>
+                  <p className="text-[10px] text-slate-500">{isAdmin ? '⭐ Admin' : 'Approved Member'}</p>
                 </div>
               </div>
               <button

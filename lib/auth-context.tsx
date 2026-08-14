@@ -16,6 +16,18 @@ import { getAuthInstance, getDbInstance } from './firebase';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
+export type UserAccessStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+
+export interface UserData {
+  uid: string;
+  email: string;
+  displayName: string;
+  isAdmin: boolean;
+  status: UserAccessStatus;
+  createdAt: unknown;
+  requestedAt?: unknown;
+}
+
 interface AuthContextType {
   user: User | null;
   userData: UserData | null;
@@ -24,14 +36,7 @@ interface AuthContextType {
   signUp: (email: string, password: string, displayName: string) => Promise<void>;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
-}
-
-export interface UserData {
-  uid: string;
-  email: string;
-  displayName: string;
-  isAdmin: boolean;
-  createdAt: unknown;
+  refreshUserData: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -42,6 +47,7 @@ const AuthContext = createContext<AuthContextType>({
   signUp: async () => {},
   signInWithGoogle: async () => {},
   signOut: async () => {},
+  refreshUserData: async () => {},
 });
 
 // ─── Provider ───────────────────────────────────────────────────────────────────
@@ -58,20 +64,33 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const userSnap = await getDoc(userRef);
 
     if (userSnap.exists()) {
-      setUserData(userSnap.data() as UserData);
+      const data = userSnap.data() as UserData;
+      // Default existing users without status to APPROVED so existing accounts are active
+      if (!data.status) {
+        data.status = data.isAdmin ? 'APPROVED' : 'APPROVED';
+      }
+      setUserData(data);
     } else {
-      // Create document for new users (Google Sign-In or automatic registration)
+      // Create document for new users. Default status is PENDING unless isAdmin: true
       const newUser: UserData = {
         uid: firebaseUser.uid,
         email: firebaseUser.email || '',
         displayName: firebaseUser.displayName || 'User',
         isAdmin: false,
+        status: 'PENDING',
         createdAt: serverTimestamp(),
+        requestedAt: serverTimestamp(),
       };
       await setDoc(userRef, newUser);
       setUserData(newUser);
     }
   }, []);
+
+  const refreshUserData = useCallback(async () => {
+    if (user) {
+      await fetchUserData(user);
+    }
+  }, [user, fetchUserData]);
 
   // Listen for auth state changes
   useEffect(() => {
@@ -102,16 +121,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const credential = await createUserWithEmailAndPassword(auth, email, password);
 
-    // Set displayName on the Firebase Auth profile
     await updateProfile(credential.user, { displayName });
 
-    // Create Firestore user document
     const newUser: UserData = {
       uid: credential.user.uid,
       email,
       displayName,
       isAdmin: false,
+      status: 'PENDING',
       createdAt: serverTimestamp(),
+      requestedAt: serverTimestamp(),
     };
     await setDoc(doc(db, 'users', credential.user.uid), newUser);
     setUserData(newUser);
@@ -137,7 +156,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, userData, loading, signIn, signUp, signInWithGoogle, signOut }}
+      value={{ user, userData, loading, signIn, signUp, signInWithGoogle, signOut, refreshUserData }}
     >
       {children}
     </AuthContext.Provider>

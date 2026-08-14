@@ -4,11 +4,12 @@ import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth-context';
-import { useIPOs, createIPO, deleteIPO } from '@/lib/firestore';
+import { useIPOs, createIPO, deleteIPO, useAllUsers } from '@/lib/firestore';
 import { formatCurrency } from '@/lib/helpers';
 import Modal from '@/components/Modal';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ActivityLogModal from '@/components/ActivityLogModal';
+import UserManagementModal from '@/components/UserManagementModal';
 
 interface ScrapedIPO {
   name: string;
@@ -42,8 +43,11 @@ export default function AdminPage() {
   const [fetching, setFetching] = useState(false);
   const [savingIndex, setSavingIndex] = useState<number | null>(null);
 
-  // Activity Log Modal
+  // Activity Log & User Management Modals
   const [showLogModal, setShowLogModal] = useState(false);
+  const [showUserModal, setShowUserModal] = useState(false);
+  const { users } = useAllUsers();
+  const pendingCount = users.filter((u) => u.status === 'PENDING').length;
 
   useEffect(() => {
     if (!authLoading && !user) router.push('/login');
@@ -181,6 +185,18 @@ export default function AdminPage() {
           <p className="text-sm text-slate-500">Create, fetch, manage, and delete IPO syndication deals.</p>
         </div>
         <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setShowUserModal(true)}
+            className="btn-amber flex items-center gap-2 relative"
+            id="admin-user-access-btn"
+          >
+            👥 User Requests
+            {pendingCount > 0 && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-white text-gray-900">
+                {pendingCount}
+              </span>
+            )}
+          </button>
           <button
             onClick={() => setShowLogModal(true)}
             className="btn-secondary flex items-center gap-2"
@@ -479,6 +495,9 @@ export default function AdminPage() {
 
       {/* ═══════ Activity Log Modal ═══════ */}
       <ActivityLogModal isOpen={showLogModal} onClose={() => setShowLogModal(false)} />
+
+      {/* ═══════ User Management Modal ═══════ */}
+      <UserManagementModal isOpen={showUserModal} onClose={() => setShowUserModal(false)} />
     </div>
   );
 }
