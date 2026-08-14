@@ -30,7 +30,19 @@ export default function LoginPage() {
       await signInWithGoogle();
     } catch (err: unknown) {
       if (err instanceof Error) {
-        setError(err.message);
+        const msg = err.message || '';
+        if (msg.includes('auth/popup-closed-by-user') || msg.includes('auth/cancelled-popup-request')) {
+          // User closed or cancelled the popup - gracefully suppress error message
+          return;
+        } else if (msg.includes('auth/popup-blocked')) {
+          setError('Google sign-in popup was blocked by your browser. Please enable popups for this site.');
+        } else if (msg.includes('auth/account-exists-with-different-credential')) {
+          setError('An account already exists with this email address using a different login method.');
+        } else if (msg.includes('auth/unauthorized-domain')) {
+          setError('This domain is not authorized in Firebase Console for Google sign-in.');
+        } else {
+          setError('Google sign-in failed. Please try again.');
+        }
       } else {
         setError('Google sign in failed.');
       }
@@ -67,8 +79,10 @@ export default function LoginPage() {
           setError('An account with this email already exists.');
         } else if (msg.includes('auth/weak-password')) {
           setError('Password should be at least 6 characters.');
+        } else if (msg.includes('auth/invalid-email')) {
+          setError('Please enter a valid email address.');
         } else {
-          setError(msg);
+          setError('Authentication failed. Please check your credentials.');
         }
       } else {
         setError('Authentication failed.');
